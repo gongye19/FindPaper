@@ -3,7 +3,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # 构建参数
-ARG VITE_API_URL=http://localhost:8000
+ARG VITE_API_URL=
 
 # 复制package文件
 COPY package*.json ./

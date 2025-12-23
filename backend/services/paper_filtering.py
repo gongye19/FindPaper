@@ -39,7 +39,7 @@ class PaperFilteringService:
             return False
         
         try:
-            prompt = f"""请判断以下论文是否与用户查询相关。
+            prompt = f"""请判断以下论文是否是用户需要的论文。
 
 用户查询：{user_query}
 
@@ -48,10 +48,10 @@ class PaperFilteringService:
 论文摘要：
 {paper_abstract}
 
-请只回答"是"或"否"，表示论文是否与用户查询相关。"""
+请只回答"是"或"否"，表示这篇论文是否是用户需要的。"""
             
             messages = [
-                {"role": "system", "content": "你是一个学术论文评估助手，擅长判断论文是否与用户查询相关。只回答'是'或'否'。"},
+                {"role": "system", "content": "你是一个学术论文评估助手，擅长判断论文是否是用户需要的。只回答'是'或'否'。"},
                 {"role": "user", "content": prompt}
             ]
             
@@ -65,8 +65,13 @@ class PaperFilteringService:
                 logger.debug("LLM返回空结果，默认保留论文")
                 return True
             
+            # 记录LLM的响应内容
+            paper_title_short = (paper_title[:50] + "...") if paper_title and len(paper_title) > 50 else (paper_title if paper_title else "未提供标题")
+            response_clean = response.strip()
+            logger.info(f"论文过滤 - 标题: {paper_title_short} | LLM响应: {response_clean}")
+            
             # 判断响应中是否包含"是"或"yes"
-            response_lower = response.lower().strip()
+            response_lower = response_clean.lower()
             is_relevant = "是" in response_lower or "yes" in response_lower or response_lower.startswith("y")
             
             return is_relevant

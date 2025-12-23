@@ -24,6 +24,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 禁用httpx和urllib3的HTTP请求日志（这些日志太冗余）
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 # ==============================
 # 配置加载
 # ==============================

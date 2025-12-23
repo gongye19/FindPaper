@@ -3,11 +3,14 @@ FastAPI服务：提供论文搜索的RESTful API
 """
 import os
 import logging
+import asyncio
 from pathlib import Path
 from typing import List
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
+import json
 
 from schema import (
     QueryRewriteRequest, QueryRewriteResponse,
@@ -29,6 +32,11 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# 禁用httpx和urllib3的HTTP请求日志（这些日志太冗余）
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # 加载环境变量（优先.env，其次.env.dev）
 env_path = Path(__file__).parent / ".env"
@@ -159,7 +167,7 @@ def search_crossref_parallel(
     return all_papers
 
 
-def supplement_abstracts(papers: List[dict]) -> List[dict]:
+def supplement_abstracts(papers: List[dict], progress_callback=None) -> List[dict]:
     """
     补充论文摘要（优化版本：优先使用批量API，单条兜底）
     :param papers: 论文列表
@@ -221,8 +229,24 @@ def supplement_abstracts(papers: List[dict]) -> List[dict]:
                         paper["abstract_source"] = "semanticscholar-title"
                     single_updated += 1
                 logger.info(f"[{idx}/{single_total}] {title[:50]}...: {'成功' if abs_text else '未找到'}")
+                
+                # 推送进度更新（每处理1篇就推送，确保实时性）
+                if progress_callback:
+                    progress_callback({
+                        "step": "abstract",
+                        "message": f"补充摘要... ({idx}/{single_total})",
+                        "status": "running"
+                    })
             except Exception as e:
-                logger.debug(f"[{idx}/{single_total}] 单条获取摘要失败 ({title[:30]}...): {e}")
+                logger.warning(f"[{idx}/{single_total}] 单条获取摘要失败 ({title[:30]}...): {e}")
+                # 继续处理下一篇，不中断流程
+                # 即使失败也推送进度
+                if progress_callback:
+                    progress_callback({
+                        "step": "abstract",
+                        "message": f"补充摘要... ({idx}/{single_total})",
+                        "status": "running"
+                    })
         
         logger.info(f"单条补充完成: {single_updated}/{single_total} 篇成功")
     
@@ -302,7 +326,7 @@ async def paper_retrieval(request: SearchRequest):
         )
         
         # 补充摘要
-        papers = supplement_abstracts(papers)
+        papers = supplement_abstracts(papers, progress_callback=None)
         
         # 转换为Pydantic模型
         paper_models = [Paper(**p) for p in papers]
@@ -353,80 +377,300 @@ async def paper_filtering(request: FilterRequest):
         raise HTTPException(status_code=500, detail=f"过滤失败: {str(e)}")
 
 
-@app.post("/v1/paper_search", response_model=PaperSearchResponse)
+def sse_event(event_type: str, data: dict) -> str:
+    """生成SSE格式的事件"""
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event_type}\ndata: {payload}\n\n"
+
+
+@app.post("/v1/paper_search")
 async def paper_search(request: PaperSearchRequest):
     """
     完整论文搜索流程：改写查询 -> 检索论文 -> 过滤论文
+    使用SSE实时推送进度
     """
-    try:
-        logger.info(f"开始完整搜索流程: query={request.query}, venues={request.venues}, year=[{request.start_year}, {request.end_year}]")
-        
-        # 步骤1: 查询改写
-        logger.info("步骤1: 查询改写...")
-        keywords = query_rewrite_service.rewrite_query(request.query)
-        logger.info(f"提取的关键词: {request.query} -> {keywords}")
-        
-        # 步骤2: 准备venue列表
-        venues = prepare_venues(
-            venues=request.venues,
-            search_journal=request.search_journal,
-            search_conference=request.search_conference
-        )
-        
-        if not venues:
-            return PaperSearchResponse(
-                original_query=request.query,
-                keywords=keywords,
-                total_papers_before_filter=0,
-                total_papers_after_filter=0,
-                papers_before_filter=[],
-                papers=[],
-                success=True,
-                message="没有可搜索的venue"
+    async def event_generator():
+        try:
+            logger.info(f"开始完整搜索流程: query={request.query}, venues={request.venues}, year=[{request.start_year}, {request.end_year}]")
+            
+            # 步骤1: 查询改写
+            yield sse_event("progress", {
+                "step": "query_rewrite",
+                "message": "查询改写...",
+                "status": "running"
+            })
+            logger.info("步骤1: 查询改写...")
+            keywords = query_rewrite_service.rewrite_query(request.query)
+            logger.info(f"提取的关键词: {request.query} -> {keywords}")
+            
+            # 步骤1完成，推送完成事件（可选，让前端知道步骤1已完成）
+            yield sse_event("progress", {
+                "step": "query_rewrite",
+                "message": "查询改写完成",
+                "status": "running"
+            })
+            # 添加短暂延迟，确保前端能正确显示进度
+            await asyncio.sleep(0.2)
+            
+            # 步骤2: 准备venue列表（这一步很快，不需要单独推送进度）
+            venues = prepare_venues(
+                venues=request.venues,
+                search_journal=request.search_journal,
+                search_conference=request.search_conference
             )
-        
-        # 步骤3: 并行搜索
-        logger.info("步骤2: 论文检索...")
-        papers = search_crossref_parallel(
-            keyword=keywords,
-            venues=venues,
-            from_year=request.start_year,
-            to_year=request.end_year,
-            rows_each=request.rows_each
-        )
-        logger.info(f"检索到 {len(papers)} 篇论文")
-        
-        # 步骤4: 补充摘要
-        logger.info("步骤3: 补充摘要...")
-        papers = supplement_abstracts(papers)
-        
-        # 步骤5: 过滤论文
-        logger.info("步骤4: 论文过滤...")
-        papers_dict = papers  # 已经是字典格式
-        filtered_papers_dict = paper_filtering_service.filter_papers(
-            user_query=request.query,  # 使用原始查询进行过滤
-            papers=papers_dict
-        )
-        logger.info(f"过滤完成: {len(filtered_papers_dict)}/{len(papers)} 篇论文符合需求")
-        
-        # 转换为Pydantic模型
-        papers_before_filter = [Paper(**p) for p in papers]  # 过滤前的论文列表
-        filtered_papers = [Paper(**p) for p in filtered_papers_dict]  # 过滤后的论文列表
-        
-        return PaperSearchResponse(
-            original_query=request.query,
-            keywords=keywords,
-            total_papers_before_filter=len(papers),
-            total_papers_after_filter=len(filtered_papers),
-            papers_before_filter=papers_before_filter,
-            papers=filtered_papers,
-            success=True,
-            message=f"搜索完成: 找到 {len(papers)} 篇论文，过滤后剩余 {len(filtered_papers)} 篇"
-        )
-        
-    except Exception as e:
-        logger.error(f"完整搜索流程出错: {e}")
-        raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
+            
+            if not venues:
+                # 推送完成进度
+                yield sse_event("progress", {
+                    "step": "completed",
+                    "message": "搜索完成",
+                    "status": "completed"
+                })
+                # 发送结果（即使没有venue也要返回结果，让前端显示相应消息）
+                yield sse_event("result", {
+                    "original_query": request.query,
+                    "keywords": keywords,
+                    "total_papers_before_filter": 0,
+                    "total_papers_after_filter": 0,
+                    # 不发送papers_before_filter数组
+                    "papers": [],
+                    "success": True,
+                    "message": "没有可搜索的venue"
+                })
+                return
+            
+            # 步骤2: 论文检索
+            yield sse_event("progress", {
+                "step": "search",
+                "message": "论文检索...",
+                "status": "running"
+            })
+            logger.info("步骤2: 论文检索...")
+            papers = search_crossref_parallel(
+                keyword=keywords,
+                venues=venues,
+                from_year=request.start_year,
+                to_year=request.end_year,
+                rows_each=request.rows_each
+            )
+            logger.info(f"检索到 {len(papers)} 篇论文")
+            
+            # 步骤2完成，推送完成事件
+            yield sse_event("progress", {
+                "step": "search",
+                "message": "论文检索完成",
+                "status": "running"
+            })
+            # 添加短暂延迟，确保前端能正确显示进度
+            await asyncio.sleep(0.2)
+            
+            # 步骤3: 补充摘要
+            # 确保前端有时间更新UI，添加短暂延迟
+            await asyncio.sleep(0.1)
+            yield sse_event("progress", {
+                "step": "abstract",
+                "message": "补充摘要...",
+                "status": "running"
+            })
+            logger.info("步骤3: 补充摘要...")
+            
+            # 由于supplement_abstracts是同步函数，我们需要在它执行过程中实时推送进度
+            # 使用一个特殊的回调机制：回调函数会直接yield进度事件
+            # 但问题是：在同步函数中无法直接yield，所以我们需要另一种方法
+            
+            # 方案：将supplement_abstracts改为生成器，在每次处理一篇论文时yield进度
+            # 但这样改动太大，暂时使用队列方案
+            
+            # 关键问题：supplement_abstracts是同步函数，执行期间无法实时推送进度
+            # 解决方案：使用一个特殊的机制，在supplement_abstracts执行过程中实时推送进度
+            # 但由于Python的GIL和同步函数的限制，我们需要使用线程或异步机制
+            
+            # 方案：使用asyncio在后台运行supplement_abstracts，并在执行过程中推送进度
+            from concurrent.futures import ThreadPoolExecutor
+            
+            # 创建一个共享的进度队列和事件
+            progress_queue = asyncio.Queue()
+            supplement_done = asyncio.Event()
+            
+            def progress_callback_wrapper(progress_data):
+                """进度回调函数，将进度数据添加到异步队列"""
+                # 注意：这个回调在同步函数中被调用，所以我们需要使用线程安全的方式
+                try:
+                    # 使用call_soon_threadsafe来安全地将数据添加到队列
+                    loop = asyncio.get_event_loop()
+                    loop.call_soon_threadsafe(progress_queue.put_nowait, progress_data)
+                except:
+                    # 如果无法获取事件循环，直接添加到普通队列
+                    pass
+            
+            async def run_supplement_abstracts():
+                """在后台线程中运行supplement_abstracts"""
+                loop = asyncio.get_event_loop()
+                with ThreadPoolExecutor() as executor:
+                    result = await loop.run_in_executor(
+                        executor,
+                        supplement_abstracts,
+                        papers,
+                        progress_callback_wrapper
+                    )
+                    supplement_done.set()
+                    return result
+            
+            # 启动supplement_abstracts任务
+            supplement_task = asyncio.create_task(run_supplement_abstracts())
+            
+            # 在supplement_abstracts执行期间，实时推送进度更新
+            while not supplement_done.is_set():
+                try:
+                    # 等待进度更新或完成事件
+                    progress_data = await asyncio.wait_for(progress_queue.get(), timeout=0.1)
+                    yield sse_event("progress", progress_data)
+                except asyncio.TimeoutError:
+                    # 超时，继续等待
+                    await asyncio.sleep(0.1)
+                    continue
+            
+            # 等待supplement_abstracts完成
+            papers = await supplement_task
+            
+            # 推送完成消息
+            yield sse_event("progress", {
+                "step": "abstract",
+                "message": "补充摘要完成",
+                "status": "running"
+            })
+            # 添加短暂延迟，确保前端能正确显示进度
+            await asyncio.sleep(0.2)
+            
+            # 步骤4: 过滤论文
+            # 确保前端有时间更新UI，添加短暂延迟
+            await asyncio.sleep(0.1)
+            yield sse_event("progress", {
+                "step": "filter",
+                "message": "论文过滤...",
+                "status": "running"
+            })
+            logger.info("步骤4: 论文过滤...")
+            papers_dict = papers  # 已经是字典格式
+            filtered_papers_dict = paper_filtering_service.filter_papers(
+                user_query=request.query,  # 使用原始查询进行过滤
+                papers=papers_dict
+            )
+            logger.info(f"过滤完成: {len(filtered_papers_dict)}/{len(papers)} 篇论文符合需求")
+            
+            # 步骤4完成，推送完成事件
+            yield sse_event("progress", {
+                "step": "filter",
+                "message": "论文过滤完成",
+                "status": "running"
+            })
+            # 添加短暂延迟，确保前端能正确显示进度
+            await asyncio.sleep(0.2)
+            
+            # 转换为Pydantic模型（添加错误处理）
+            papers_before_filter = []
+            filtered_papers = []
+            try:
+                papers_before_filter = [Paper(**p) for p in papers]  # 过滤前的论文列表
+                filtered_papers = [Paper(**p) for p in filtered_papers_dict]  # 过滤后的论文列表
+            except Exception as e:
+                logger.warning(f"转换为Pydantic模型时出错: {e}，使用原始字典格式")
+                # 如果转换失败，直接使用字典格式
+                papers_before_filter = papers
+                filtered_papers = filtered_papers_dict
+            
+            # 发送完成进度
+            yield sse_event("progress", {
+                "step": "completed",
+                "message": "搜索完成",
+                "status": "completed"
+            })
+            
+            # 发送最终结果
+            try:
+                # 尝试使用model_dump，如果失败则直接使用字典
+                papers_before_filter_data = []
+                filtered_papers_data = []
+                
+                for p in papers_before_filter:
+                    if hasattr(p, 'model_dump'):
+                        papers_before_filter_data.append(p.model_dump())
+                    else:
+                        papers_before_filter_data.append(p)
+                
+                for p in filtered_papers:
+                    if hasattr(p, 'model_dump'):
+                        filtered_papers_data.append(p.model_dump())
+                    else:
+                        filtered_papers_data.append(p)
+                
+                # 只发送必要的字段，不发送papers_before_filter数组以减小payload大小
+                result_payload = {
+                    "original_query": request.query,
+                    "keywords": keywords,
+                    "total_papers_before_filter": len(papers),
+                    "total_papers_after_filter": len(filtered_papers_dict),
+                    # 不发送papers_before_filter数组，前端只需要统计数字
+                    # "papers_before_filter": papers_before_filter_data,
+                    "papers": filtered_papers_data,
+                    "success": True,
+                    "message": f"搜索完成: 找到 {len(papers)} 篇论文，过滤后剩余 {len(filtered_papers_dict)} 篇"
+                }
+                logger.info(f"发送result事件: total_before={len(papers)}, total_after={len(filtered_papers_dict)}")
+                # 记录payload大小，帮助排查问题
+                import sys
+                payload_size = sys.getsizeof(json.dumps(result_payload, ensure_ascii=False))
+                logger.info(f"result事件payload大小: {payload_size} bytes, papers数量: {len(filtered_papers_data)}")
+                result_event_str = sse_event("result", result_payload)
+                logger.info(f"result事件字符串长度: {len(result_event_str)} bytes")
+                # 检查result事件字符串的前100个字符，确认格式正确
+                logger.info(f"result事件前100字符: {result_event_str[:100]}")
+                yield result_event_str
+                logger.info("result事件已发送")
+                # 刷新输出缓冲区，确保数据立即发送
+                import sys
+                sys.stdout.flush()
+                # 添加短暂延迟，确保事件完全发送
+                await asyncio.sleep(0.2)
+            except Exception as e:
+                logger.error(f"构建result_payload时出错: {e}")
+                # 即使出错也要发送result事件，使用最简单的格式
+                # 简化格式：不发送papers_before_filter数组
+                result_payload = {
+                    "original_query": request.query,
+                    "keywords": keywords,
+                    "total_papers_before_filter": len(papers),
+                    "total_papers_after_filter": len(filtered_papers_dict),
+                    # 不发送papers_before_filter数组，前端只需要统计数字
+                    # "papers_before_filter": papers,
+                    "papers": filtered_papers_dict,
+                    "success": True,
+                    "message": f"搜索完成: 找到 {len(papers)} 篇论文，过滤后剩余 {len(filtered_papers_dict)} 篇"
+                }
+                logger.info(f"发送result事件（简化格式）: total_before={len(papers)}, total_after={len(filtered_papers_dict)}")
+                yield sse_event("result", result_payload)
+            
+        except Exception as e:
+            logger.error(f"完整搜索流程出错: {e}", exc_info=True)
+            import traceback
+            logger.error(f"错误堆栈: {traceback.format_exc()}")
+            try:
+                yield sse_event("error", {
+                    "error": str(e),
+                    "message": f"搜索失败: {str(e)}"
+                })
+            except Exception as e2:
+                logger.error(f"发送error事件时也出错: {e2}")
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁用Nginx缓冲
+        }
+    )
 
 
 if __name__ == "__main__":

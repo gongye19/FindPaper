@@ -116,12 +116,13 @@ class SemanticScholarService:
         if not self.api_key:
             return None
 
-        # 1) DOI精确查
+        # 1) DOI精确查（优先）
+        doi_success = False
         if doi:
             try:
                 url = f"{self.base_url}/paper/DOI:{urllib.parse.quote(doi)}"
                 params = {"fields": "title,abstract,year"}
-                resp = requests.get(url, params=params, headers=self.headers, timeout=20)
+                resp = requests.get(url, params=params, headers=self.headers, timeout=15)
                 time.sleep(1.1)  # 尊重1 req/s
                 
                 if resp.status_code == 200:
@@ -130,11 +131,20 @@ class SemanticScholarService:
                     if abs_text:
                         logger.debug(f"通过DOI获取摘要成功: {doi[:20]}...")
                         return abs_text
+                    # DOI查询成功但无摘要，标记为成功但不返回，继续尝试标题搜索
+                    doi_success = True
+                elif resp.status_code == 404:
+                    logger.debug(f"DOI不存在: {doi[:20]}...")
+                    # DOI不存在，继续尝试标题搜索
+            except requests.exceptions.Timeout:
+                logger.warning(f"DOI查询超时: {doi[:20]}...")
+                # 超时，继续尝试标题搜索
             except Exception as e:
                 logger.debug(f"DOI查询失败: {e}")
+                # DOI查询失败，继续尝试标题搜索
 
-        # 2) 标题搜索兜底
-        if title:
+        # 2) 标题搜索兜底（仅在无DOI或DOI查询失败/无摘要时）
+        if title and not doi_success:  # 只有在没有DOI或DOI查询失败/无摘要时才用标题搜索
             try:
                 url = f"{self.base_url}/paper/search"
                 params = {
@@ -142,7 +152,7 @@ class SemanticScholarService:
                     "limit": 1,
                     "fields": "title,abstract,year",
                 }
-                resp = requests.get(url, params=params, headers=self.headers, timeout=20)
+                resp = requests.get(url, params=params, headers=self.headers, timeout=15)
                 time.sleep(1.1)
                 
                 if resp.status_code != 200:
@@ -166,6 +176,9 @@ class SemanticScholarService:
                 if abs_text:
                     logger.debug(f"通过标题获取摘要成功: {title[:30]}...")
                 return abs_text or None
+            except requests.exceptions.Timeout:
+                logger.warning(f"标题搜索超时: {title[:30]}...")
+                return None
             except Exception as e:
                 logger.debug(f"标题搜索失败: {e}")
                 return None

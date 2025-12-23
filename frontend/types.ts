@@ -38,3 +38,10 @@ export interface FilterState {
   startYear: number;
   endYear: number;
 }
+
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
