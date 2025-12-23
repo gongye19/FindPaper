@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dist/
+build/
+.vite/
+
+# 环境变量文件
+.env
+.env.local
+.env.*.local
+.env.dev
+.env.prod
+.env.test
+backend/.env
+backend/.env.dev
+frontend/.env
+frontend/.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+logs/
+
+# 测试
+test/__pycache__/
+*.test.py
+.pytest_cache/
+
+# 临时文件
+*.tmp
+*.temp
+.cache/
+
+# Docker
+.docker/
+
+# 其他
+*.bak
+*.backup

@@ -1,0 +1,8 @@
+
+{
+  "name": "ScholarPulse - AI Paper Finder",
+  "description": "A sophisticated academic research assistant that helps users discover papers across CS and Business domains with real-time Google Search grounding.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

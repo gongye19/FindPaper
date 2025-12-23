@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScholarPulse | Elite Paper Discovery</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Plus Jakarta Sans', 'sans-serif'],
+                    },
+                    colors: {
+                        academic: {
+                            blue: {
+                                50: '#fafafa', // Light Neutral
+                                100: '#f4f4f5',
+                                200: '#e4e4e7',
+                                300: '#d4d4d8', // Border Neutral
+                                400: '#a1a1aa',
+                                500: '#71717a', // Text Secondary
+                                600: '#52525b',
+                                700: '#27272a', // Text Primary (Zinc 800)
+                                800: '#1a73e8', // Google Blue (Primary Accent)
+                                900: '#174ea6', // Google Darker Blue
+                                950: '#202124', // Google Dark Surface
+                                1000: '#171717', // Google Dark Background
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { 
+            transition: background-color 0.3s ease;
+        }
+        
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(113, 113, 122, 0.2);
+            border-radius: 20px;
+        }
+        .dark ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(113, 113, 122, 0.3);
+        }
+
+        .academic-shadow {
+            box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05);
+        }
+
+        @keyframes fade-in {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-up {
+            animation: fade-in 0.4s ease-out forwards;
+        }
+        
+        .no-scrollbar::-webkit-scrollbar {
+          display: none;
+        }
+        .no-scrollbar {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+
+        /* Year Range Slider Styles */
+        input[type=range] {
+          -webkit-appearance: none;
+          width: 100%;
+          background: transparent;
+        }
+        input[type=range]:focus {
+          outline: none;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+          width: 100%;
+          height: 4px;
+          cursor: pointer;
+          background: #e4e4e7;
+          border-radius: 2px;
+        }
+        .dark input[type=range]::-webkit-slider-runnable-track {
+          background: #3f3f46;
+        }
+        input[type=range]::-webkit-slider-thumb {
+          height: 16px;
+          width: 16px;
+          border-radius: 50%;
+          background: #1a73e8;
+          cursor: pointer;
+          -webkit-appearance: none;
+          margin-top: -6px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .dark input[type=range]::-webkit-slider-thumb {
+          background: #8ab4f8;
+        }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="antialiased font-sans">
+    <div id="root"></div>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

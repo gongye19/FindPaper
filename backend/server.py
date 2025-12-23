@@ -1,0 +1,434 @@
+"""
+FastAPI服务：提供论文搜索的RESTful API
+"""
+import os
+import logging
+from pathlib import Path
+from typing import List
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+from schema import (
+    QueryRewriteRequest, QueryRewriteResponse,
+    SearchRequest, SearchResponse, Paper,
+    FilterRequest, FilterResponse,
+    PaperSearchRequest, PaperSearchResponse,
+    ErrorResponse
+)
+from services.llm_service import LLMService
+from services.query_rewrite import QueryRewriteService
+from services.crossref_service import CrossRefService
+from services.semantic_scholar_service import SemanticScholarService
+from services.paper_filtering import PaperFilteringService
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# 加载环境变量（优先.env，其次.env.dev）
+env_path = Path(__file__).parent / ".env"
+if not env_path.exists():
+    env_path = Path(__file__).parent / ".env.dev"
+if env_path.exists():
+    load_dotenv(env_path)
+    logger.info(f"已加载环境变量文件: {env_path}")
+else:
+    logger.warning(f"环境变量文件不存在: {env_path}")
+
+# 初始化FastAPI应用
+app = FastAPI(
+    title="Paper Search API",
+    description="学术论文搜索API服务",
+    version="1.0.0"
+)
+
+# 配置CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 生产环境应该限制具体域名
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 从config导入venue配置
+from config import (
+    JOURNAL_VENUES, CONFERENCE_VENUES, CONFERENCE_NAME_FILTERS,
+    MAX_CROSSREF_WORKERS, MAX_FILTERING_WORKERS
+)
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# 初始化服务（单例模式）
+llm_service = LLMService()
+query_rewrite_service = QueryRewriteService(llm_service)
+crossref_service = CrossRefService()
+s2_service = SemanticScholarService()
+paper_filtering_service = PaperFilteringService(llm_service, max_workers=MAX_FILTERING_WORKERS)
+
+
+# ==============================
+# 辅助函数
+# ==============================
+
+def prepare_venues(venues: List[str] = None, search_journal: bool = True, search_conference: bool = True) -> List[tuple]:
+    """
+    准备要搜索的venue列表
+    :param venues: 选定的venue代码列表，None表示搜索所有
+    :param search_journal: 是否搜索期刊
+    :param search_conference: 是否搜索会议
+    :return: [(code, name, type), ...] 列表
+    """
+    venue_list = []
+    if search_journal:
+        for code, name in JOURNAL_VENUES.items():
+            if venues is None or code in venues:
+                venue_list.append((code, name, "JOURNAL"))
+    if search_conference:
+        for code, name in CONFERENCE_VENUES.items():
+            if venues is None or code in venues:
+                venue_list.append((code, name, "CONFERENCE"))
+    return venue_list
+
+
+def search_crossref_parallel(
+    keyword: str,
+    venues: List[tuple],
+    from_year: int,
+    to_year: int,
+    rows_each: int
+) -> List[dict]:
+    """
+    并行搜索所有venues
+    :return: 扁平化的论文列表
+    """
+    job_args = []
+    venue_info_map = {}
+    for idx, (code, name, vtype) in enumerate(venues):
+        job_args.append((keyword, code, name, vtype, from_year, to_year, rows_each))
+        venue_info_map[idx] = (code, name, vtype)
+    
+    all_results_per_venue = [None] * len(venues)
+    max_workers = min(MAX_CROSSREF_WORKERS, len(job_args)) or 1
+    
+    def search_wrapper(args):
+        keyword, code, name, vtype, from_year, to_year, rows = args
+        try:
+            results = crossref_service.search_one_venue(
+                keyword=keyword,
+                venue_code=code,
+                venue_name=name,
+                venue_type=vtype,
+                from_year=from_year,
+                to_year=to_year,
+                rows=rows,
+                conference_filters=CONFERENCE_NAME_FILTERS if vtype == "CONFERENCE" else None
+            )
+            return results, None
+        except Exception as e:
+            logger.error(f"搜索 {code} 时出错: {e}")
+            return [], str(e)
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_to_index = {
+            ex.submit(search_wrapper, job_args[idx]): idx 
+            for idx in range(len(job_args))
+        }
+        
+        for future in as_completed(future_to_index):
+            idx = future_to_index[future]
+            try:
+                results, err = future.result()
+                all_results_per_venue[idx] = results
+                if err:
+                    logger.error(f"Venue {venue_info_map[idx][0]} 搜索出错: {err}")
+            except Exception as e:
+                all_results_per_venue[idx] = []
+                logger.error(f"Venue {venue_info_map[idx][0]} 执行异常: {e}")
+    
+    # 扁平化结果
+    all_papers = []
+    for venue_results in all_results_per_venue:
+        if venue_results:
+            all_papers.extend(venue_results)
+    
+    return all_papers
+
+
+def supplement_abstracts(papers: List[dict]) -> List[dict]:
+    """
+    补充论文摘要（优化版本：优先使用批量API，单条兜底）
+    :param papers: 论文列表
+    :return: 补充摘要后的论文列表
+    """
+    # 收集所有需要补充摘要的论文
+    papers_need_abstract = [
+        (p.get("doi"), p["title"], p.get("year"), p)
+        for p in papers
+        if not p.get("abstract")
+    ]
+    
+    if not papers_need_abstract:
+        return papers
+    
+    total_count = len(papers_need_abstract)
+    logger.info(f"共 {total_count} 篇论文需要补充摘要")
+    
+    # 步骤1: 优先使用批量API获取有DOI的论文摘要
+    papers_with_doi = [(doi, p) for doi, title, year, p in papers_need_abstract if doi]
+    if papers_with_doi:
+        logger.info(f"批量获取 {len(papers_with_doi)} 篇有DOI的论文摘要...")
+        dois_batch = [doi for doi, p in papers_with_doi]
+        s2_batch_map = s2_service.fetch_abstract_batch(dois_batch)
+        
+        batch_updated = 0
+        for doi, p in papers_with_doi:
+            if p.get("abstract"):  # 防止重复
+                continue
+            abs_text = s2_batch_map.get(doi.lower())
+            if abs_text:
+                p["abstract"] = abs_text
+                p["abstract_source"] = "semanticscholar-batch"
+                batch_updated += 1
+        logger.info(f"批量获取完成: {batch_updated}/{len(papers_with_doi)} 篇成功")
+    
+    # 步骤2: 对于没有DOI或批量未获取到的论文，使用单条API兜底
+    papers_need_single = [
+        (doi, title, year, p)
+        for doi, title, year, p in papers_need_abstract
+        if not p.get("abstract")
+    ]
+    
+    if papers_need_single:
+        logger.info(f"单条获取 {len(papers_need_single)} 篇论文的摘要（无DOI或批量未获取到）...")
+        single_updated = 0
+        single_total = len(papers_need_single)
+        
+        for idx, (doi, title, year, paper) in enumerate(papers_need_single, 1):
+            if paper.get("abstract"):  # 防止重复
+                continue
+            try:
+                abs_text = s2_service.fetch_abstract_single(doi=doi, title=title, year=year)
+                if abs_text:
+                    paper["abstract"] = abs_text
+                    if doi:
+                        paper["abstract_source"] = "semanticscholar-single"
+                    else:
+                        paper["abstract_source"] = "semanticscholar-title"
+                    single_updated += 1
+                logger.info(f"[{idx}/{single_total}] {title[:50]}...: {'成功' if abs_text else '未找到'}")
+            except Exception as e:
+                logger.debug(f"[{idx}/{single_total}] 单条获取摘要失败 ({title[:30]}...): {e}")
+        
+        logger.info(f"单条补充完成: {single_updated}/{single_total} 篇成功")
+    
+    # 统计总结
+    final_with_abstract = sum(1 for p in papers if p.get("abstract"))
+    logger.info(f"摘要补充完成: 共 {final_with_abstract}/{total_count} 篇论文有摘要")
+    return papers
+
+
+# ==============================
+# API Endpoints
+# ==============================
+
+@app.get("/")
+async def root():
+    """根路径"""
+    return {
+        "message": "Paper Search API",
+        "version": "1.0.0",
+        "endpoints": {
+            "v1/paper_search": "POST - 完整论文搜索流程（改写+检索+过滤）",
+            "v1/query_rewrite": "POST - 查询改写服务",
+            "v1/paper_retrieval": "POST - 论文检索服务",
+            "v1/paper_filtering": "POST - 论文过滤服务"
+        }
+    }
+
+
+@app.post("/v1/query_rewrite", response_model=QueryRewriteResponse)
+async def query_rewrite(request: QueryRewriteRequest):
+    """
+    查询改写服务：提取用户查询中的英文关键词列表
+    """
+    try:
+        keywords = query_rewrite_service.rewrite_query(request.query)
+        return QueryRewriteResponse(
+            original_query=request.query,
+            keywords=keywords,
+            success=True
+        )
+    except Exception as e:
+        logger.error(f"查询改写出错: {e}")
+        raise HTTPException(status_code=500, detail=f"查询改写失败: {str(e)}")
+
+
+@app.post("/v1/paper_retrieval", response_model=SearchResponse)
+async def paper_retrieval(request: SearchRequest):
+    """
+    论文检索服务：从多个venue中搜索论文
+    """
+    try:
+        logger.info(f"开始搜索: query={request.query}, venues={request.venues}, year=[{request.start_year}, {request.end_year}]")
+        
+        # 准备venue列表
+        venues = prepare_venues(
+            venues=request.venues,
+            search_journal=request.search_journal,
+            search_conference=request.search_conference
+        )
+        
+        if not venues:
+            return SearchResponse(
+                query=request.query,
+                total_papers=0,
+                papers=[],
+                success=True,
+                message="没有可搜索的venue"
+            )
+        
+        # 并行搜索
+        papers = search_crossref_parallel(
+            keyword=request.query,
+            venues=venues,
+            from_year=request.start_year,
+            to_year=request.end_year,
+            rows_each=request.rows_each
+        )
+        
+        # 补充摘要
+        papers = supplement_abstracts(papers)
+        
+        # 转换为Pydantic模型
+        paper_models = [Paper(**p) for p in papers]
+        
+        return SearchResponse(
+            query=request.query,
+            total_papers=len(paper_models),
+            papers=paper_models,
+            success=True,
+            message=f"找到 {len(paper_models)} 篇论文"
+        )
+        
+    except Exception as e:
+        logger.error(f"搜索出错: {e}")
+        raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
+
+
+@app.post("/v1/paper_filtering", response_model=FilterResponse)
+async def paper_filtering(request: FilterRequest):
+    """
+    论文过滤服务：使用LLM判断论文是否符合用户需求
+    """
+    try:
+        logger.info(f"开始过滤: user_query={request.user_query}, papers_count={len(request.papers)}")
+        
+        # 转换为字典格式
+        papers_dict = [p.dict() for p in request.papers]
+        
+        # 过滤论文
+        filtered_papers_dict = paper_filtering_service.filter_papers(
+            user_query=request.user_query,
+            papers=papers_dict
+        )
+        
+        # 转换为Pydantic模型
+        filtered_papers = [Paper(**p) for p in filtered_papers_dict]
+        
+        return FilterResponse(
+            original_count=len(request.papers),
+            filtered_count=len(filtered_papers),
+            papers=filtered_papers,
+            success=True,
+            message=f"过滤完成: {len(filtered_papers)}/{len(request.papers)} 篇论文符合需求"
+        )
+        
+    except Exception as e:
+        logger.error(f"过滤出错: {e}")
+        raise HTTPException(status_code=500, detail=f"过滤失败: {str(e)}")
+
+
+@app.post("/v1/paper_search", response_model=PaperSearchResponse)
+async def paper_search(request: PaperSearchRequest):
+    """
+    完整论文搜索流程：改写查询 -> 检索论文 -> 过滤论文
+    """
+    try:
+        logger.info(f"开始完整搜索流程: query={request.query}, venues={request.venues}, year=[{request.start_year}, {request.end_year}]")
+        
+        # 步骤1: 查询改写
+        logger.info("步骤1: 查询改写...")
+        keywords = query_rewrite_service.rewrite_query(request.query)
+        logger.info(f"提取的关键词: {request.query} -> {keywords}")
+        
+        # 步骤2: 准备venue列表
+        venues = prepare_venues(
+            venues=request.venues,
+            search_journal=request.search_journal,
+            search_conference=request.search_conference
+        )
+        
+        if not venues:
+            return PaperSearchResponse(
+                original_query=request.query,
+                keywords=keywords,
+                total_papers_before_filter=0,
+                total_papers_after_filter=0,
+                papers_before_filter=[],
+                papers=[],
+                success=True,
+                message="没有可搜索的venue"
+            )
+        
+        # 步骤3: 并行搜索
+        logger.info("步骤2: 论文检索...")
+        papers = search_crossref_parallel(
+            keyword=keywords,
+            venues=venues,
+            from_year=request.start_year,
+            to_year=request.end_year,
+            rows_each=request.rows_each
+        )
+        logger.info(f"检索到 {len(papers)} 篇论文")
+        
+        # 步骤4: 补充摘要
+        logger.info("步骤3: 补充摘要...")
+        papers = supplement_abstracts(papers)
+        
+        # 步骤5: 过滤论文
+        logger.info("步骤4: 论文过滤...")
+        papers_dict = papers  # 已经是字典格式
+        filtered_papers_dict = paper_filtering_service.filter_papers(
+            user_query=request.query,  # 使用原始查询进行过滤
+            papers=papers_dict
+        )
+        logger.info(f"过滤完成: {len(filtered_papers_dict)}/{len(papers)} 篇论文符合需求")
+        
+        # 转换为Pydantic模型
+        papers_before_filter = [Paper(**p) for p in papers]  # 过滤前的论文列表
+        filtered_papers = [Paper(**p) for p in filtered_papers_dict]  # 过滤后的论文列表
+        
+        return PaperSearchResponse(
+            original_query=request.query,
+            keywords=keywords,
+            total_papers_before_filter=len(papers),
+            total_papers_after_filter=len(filtered_papers),
+            papers_before_filter=papers_before_filter,
+            papers=filtered_papers,
+            success=True,
+            message=f"搜索完成: 找到 {len(papers)} 篇论文，过滤后剩余 {len(filtered_papers)} 篇"
+        )
+        
+    except Exception as e:
+        logger.error(f"完整搜索流程出错: {e}")
+        raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
