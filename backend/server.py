@@ -6,7 +6,7 @@ import logging
 import asyncio
 from pathlib import Path
 from typing import List
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
@@ -24,6 +24,7 @@ from services.query_rewrite import QueryRewriteService
 from services.crossref_service import CrossRefService
 from services.semantic_scholar_service import SemanticScholarService
 from services.paper_filtering import PaperFilteringService
+from middleware.quota_guard import get_quota_guard
 
 # 配置日志
 logging.basicConfig(
@@ -270,9 +271,31 @@ async def root():
             "v1/paper_search": "POST - 完整论文搜索流程（改写+检索+过滤）",
             "v1/query_rewrite": "POST - 查询改写服务",
             "v1/paper_retrieval": "POST - 论文检索服务",
-            "v1/paper_filtering": "POST - 论文过滤服务"
+            "v1/paper_filtering": "POST - 论文过滤服务",
+            "v1/quota": "GET - 获取用户配额信息"
         }
     }
+
+
+@app.get("/v1/quota")
+async def get_quota(http_request: Request):
+    """
+    获取用户配额信息（不扣减配额）
+    """
+    quota_guard = get_quota_guard()
+    quota_info = quota_guard.get_quota_info(http_request)
+    
+    if quota_info is None:
+        # 如果没有身份信息，返回默认值
+        return {
+            "user_type": "anon",
+            "remaining": 3,
+            "limit": 3,
+            "used_count": 0,
+            "plan": None
+        }
+    
+    return quota_info
 
 
 @app.post("/v1/query_rewrite", response_model=QueryRewriteResponse)
@@ -384,20 +407,31 @@ def sse_event(event_type: str, data: dict) -> str:
 
 
 @app.post("/v1/paper_search")
-async def paper_search(request: PaperSearchRequest):
+async def paper_search(request: PaperSearchRequest, http_request: Request):
     """
     完整论文搜索流程：改写查询 -> 检索论文 -> 过滤论文
     使用SSE实时推送进度
     """
+    # 配额检查：在搜索开始前检查配额
+    quota_guard = get_quota_guard()
+    passed, user_type, remaining = quota_guard.check_quota(http_request)
+    
+    if not passed:
+        # 配额不足，抛出异常
+        quota_guard.raise_quota_exceeded(user_type or "anon")
+    
+    logger.info(f"配额检查通过: user_type={user_type}, remaining={remaining}")
+    
     async def event_generator():
         try:
             logger.info(f"开始完整搜索流程: query={request.query}, venues={request.venues}, year=[{request.start_year}, {request.end_year}]")
             
-            # 步骤1: 查询改写
+            # 步骤1: 查询改写（同时发送配额信息）
             yield sse_event("progress", {
                 "step": "query_rewrite",
                 "message": "查询改写...",
-                "status": "running"
+                "status": "running",
+                "quota_remaining": remaining  # 添加配额信息
             })
             logger.info("步骤1: 查询改写...")
             keywords = query_rewrite_service.rewrite_query(request.query)
@@ -435,7 +469,8 @@ async def paper_search(request: PaperSearchRequest):
                     # 不发送papers_before_filter数组
                     "papers": [],
                     "success": True,
-                    "message": "没有可搜索的venue"
+                    "message": "没有可搜索的venue",
+                    "quota_remaining": remaining  # 添加配额信息
                 })
                 return
             
@@ -614,7 +649,8 @@ async def paper_search(request: PaperSearchRequest):
                     # "papers_before_filter": papers_before_filter_data,
                     "papers": filtered_papers_data,
                     "success": True,
-                    "message": f"搜索完成: 找到 {len(papers)} 篇论文，过滤后剩余 {len(filtered_papers_dict)} 篇"
+                    "message": f"搜索完成: 找到 {len(papers)} 篇论文，过滤后剩余 {len(filtered_papers_dict)} 篇",
+                    "quota_remaining": remaining  # 添加配额信息
                 }
                 logger.info(f"发送result事件: total_before={len(papers)}, total_after={len(filtered_papers_dict)}")
                 # 记录payload大小，帮助排查问题
@@ -645,7 +681,8 @@ async def paper_search(request: PaperSearchRequest):
                     # "papers_before_filter": papers,
                     "papers": filtered_papers_dict,
                     "success": True,
-                    "message": f"搜索完成: 找到 {len(papers)} 篇论文，过滤后剩余 {len(filtered_papers_dict)} 篇"
+                    "message": f"搜索完成: 找到 {len(papers)} 篇论文，过滤后剩余 {len(filtered_papers_dict)} 篇",
+                    "quota_remaining": remaining  # 添加配额信息
                 }
                 logger.info(f"发送result事件（简化格式）: total_before={len(papers)}, total_after={len(filtered_papers_dict)}")
                 yield sse_event("result", result_payload)
@@ -662,14 +699,19 @@ async def paper_search(request: PaperSearchRequest):
             except Exception as e2:
                 logger.error(f"发送error事件时也出错: {e2}")
     
+    # 在响应 header 中添加剩余配额信息（如果检查通过）
+    response_headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",  # 禁用Nginx缓冲
+    }
+    if passed and remaining is not None:
+        response_headers["X-Quota-Remaining"] = str(remaining)
+    
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # 禁用Nginx缓冲
-        }
+        headers=response_headers
     )
 
 

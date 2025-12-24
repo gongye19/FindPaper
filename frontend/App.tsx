@@ -2,8 +2,11 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import React from 'react';
 import Sidebar from './components/Sidebar';
 import RegistrationModal from './components/RegistrationModal';
+import ConfirmDialog from './components/ConfirmDialog';
 import { FilterState, Message, Conversation } from './types';
-import { MAX_FREE_TRIALS } from './constants';
+import { MAX_FREE_TRIALS, MAX_FREE_USER_QUOTA } from './constants';
+import { getSession, getCurrentUser, onAuthStateChange, getUserPlan } from './services/auth';
+import type { User, Session } from '@supabase/supabase-js';
 
 interface Paper {
   title: string;
@@ -39,14 +42,33 @@ const App: React.FC = () => {
     message?: string;
   }>({ step: '', status: 'idle' });
   const requestAbortControllerRef = useRef<AbortController | null>(null);
-  const [trialsUsed, setTrialsUsed] = useState(() => {
-    const saved = localStorage.getItem('trials_used');
-    return saved ? parseInt(saved, 10) : 0;
-  });
-  const [isRegistered, setIsRegistered] = useState(() => {
-    return localStorage.getItem('is_registered') === 'true';
+  const isDeletingRef = useRef<string | null>(null); // 标记正在删除的对话ID
+  const searchingConversationIdRef = useRef<string | null>(null); // 标记正在搜索的对话ID
+  
+  // Supabase Auth 状态
+  const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [anonId, setAnonId] = useState<string>(() => {
+    // 生成或获取游客 ID
+    const saved = localStorage.getItem('anon_id');
+    if (saved) {
+      return saved;
+    }
+    const newId = crypto.randomUUID();
+    localStorage.setItem('anon_id', newId);
+    return newId;
   });
   const [showRegModal, setShowRegModal] = useState(false);
+  // 配额状态
+  const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null); // null 表示未知，数字表示剩余次数
+  const [userPlan, setUserPlan] = useState<'free' | 'pro' | null>(null); // 用户计划
+  // 确认对话框状态
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   // 对话管理
   const [conversations, setConversations] = useState<Conversation[]>(() => {
@@ -77,10 +99,15 @@ const App: React.FC = () => {
     return saved || 'default';
   });
   
-  // 每个对话的状态（messages, papers等）
+  // 每个对话的状态（messages, papers, progress等）
   const [conversationData, setConversationData] = useState<Record<string, {
     messages: Message[];
     papers: Paper[];
+    progress?: {
+      step: string;
+      status: 'idle' | 'running' | 'completed' | 'error';
+      message?: string;
+    };
   }>>(() => {
     const saved = localStorage.getItem('conversation_data');
     if (saved) {
@@ -126,9 +153,20 @@ const App: React.FC = () => {
 
   // 同步当前对话数据到状态
   useEffect(() => {
+    // 如果正在删除对话，跳过更新（避免干扰删除操作）
+    if (isDeletingRef.current !== null) {
+      return;
+    }
+    
     if (conversationData[currentConversationId]) {
       setMessages(conversationData[currentConversationId].messages);
       setPapers(conversationData[currentConversationId].papers);
+      // 恢复当前对话的进度状态
+      if (conversationData[currentConversationId].progress) {
+        setProgress(conversationData[currentConversationId].progress!);
+      } else {
+        setProgress({ step: '', status: 'idle' });
+      }
     } else {
       // 如果对话数据不存在，初始化它
       const initialMessages: Message[] = [{
@@ -139,11 +177,13 @@ const App: React.FC = () => {
       }];
       setMessages(initialMessages);
       setPapers([]);
+      setProgress({ step: '', status: 'idle' });
       setConversationData(prev => ({
         ...prev,
         [currentConversationId]: {
           messages: initialMessages,
-          papers: []
+          papers: [],
+          progress: { step: '', status: 'idle' }
         }
       }));
     }
@@ -196,18 +236,135 @@ const App: React.FC = () => {
     }
   }, [isDarkMode]);
 
+  // 初始化 Supabase Auth 状态
   useEffect(() => {
-    localStorage.setItem('trials_used', trialsUsed.toString());
-  }, [trialsUsed]);
+    // 获取当前 session 和用户
+    getSession().then(async (sess) => {
+      if (sess) {
+        setSession(sess);
+        setUser(sess.user);
+        // 获取用户计划
+        if (sess.user) {
+          const plan = await getUserPlan(sess.user.id);
+          setUserPlan(plan);
+          // 不设置配额，等待首次搜索时从后端获取
+        }
+      } else {
+        // 未登录，不设置配额（等待首次搜索时从后端获取）
+        setUserPlan(null);
+        // 不设置 quotaRemaining，保持为 null，直到从后端获取实际配额
+      }
+    });
+    
+    getCurrentUser().then(async (u) => {
+      if (u) {
+        setUser(u);
+        // 获取用户计划
+        const plan = await getUserPlan(u.id);
+        setUserPlan(plan);
+        // 如果是 free 用户，不设置配额（等待首次搜索时从后端获取）
+        // Pro 用户不显示配额
+      } else {
+        // 未登录，不设置配额（等待首次搜索时从后端获取）
+        setUserPlan(null);
+        // 不设置 quotaRemaining，保持为 null，直到从后端获取实际配额
+      }
+    });
+    
+    // 监听认证状态变化
+    const { data: { subscription } } = onAuthStateChange(async (event, sess) => {
+      if (event === 'SIGNED_IN') {
+        setSession(sess);
+        setUser(sess?.user ?? null);
+        if (sess?.user) {
+          const plan = await getUserPlan(sess.user.id);
+          setUserPlan(plan);
+          // 不设置配额，等待首次搜索时从后端获取
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setSession(null);
+        setUser(null);
+        setUserPlan(null);
+        // 登出后，清除配额显示（等待首次搜索时从后端获取）
+        setQuotaRemaining(null);
+      } else if (event === 'TOKEN_REFRESHED' && sess) {
+        setSession(sess);
+        setUser(sess.user);
+        if (sess.user) {
+          const plan = await getUserPlan(sess.user.id);
+          setUserPlan(plan);
+          // 不设置配额，等待首次搜索时从后端获取
+        }
+      }
+    });
+    
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
+  // 获取配额信息
+  const fetchQuota = useCallback(async () => {
+    try {
+      const getApiUrl = () => {
+        const envApiUrl = import.meta.env.VITE_API_URL;
+        if (envApiUrl && envApiUrl !== 'http://backend:8000' && envApiUrl !== '') {
+          return envApiUrl;
+        }
+        return '';
+      };
+      const apiUrl = getApiUrl();
+      const apiEndpoint = `${apiUrl}/v1/quota`;
+      
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+      };
+      
+      // 添加身份标识
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`;
+      } else {
+        headers['X-Anon-Id'] = anonId;
+      }
+      
+      const response = await fetch(apiEndpoint, {
+        method: 'GET',
+        headers,
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.remaining !== undefined) {
+          setQuotaRemaining(data.remaining);
+        }
+        if (data.plan) {
+          setUserPlan(data.plan === 'pro' ? 'pro' : 'free');
+        }
+      }
+    } catch (error) {
+      console.error('获取配额信息失败:', error);
+    }
+  }, [session, anonId]);
+
+  // 页面加载时获取配额信息
   useEffect(() => {
-    localStorage.setItem('is_registered', isRegistered.toString());
-  }, [isRegistered]);
+    // 等待用户状态初始化后再获取配额
+    const timer = setTimeout(() => {
+      try {
+        fetchQuota();
+      } catch (error) {
+        console.error('获取配额失败:', error);
+        // 即使失败也不影响页面渲染
+      }
+    }, 1000);
+    
+    return () => clearTimeout(timer);
+  }, [fetchQuota]);
 
   const toggleTheme = () => setIsDarkMode(!isDarkMode);
 
   const handleRegister = () => {
-    setIsRegistered(true);
+    // 注册成功后，用户状态会自动更新（通过 onAuthStateChange）
     setShowRegModal(false);
   };
 
@@ -252,6 +409,84 @@ const App: React.FC = () => {
     ));
   };
 
+  // 清除所有对话（保留默认对话）
+  const handleClearConversations = () => {
+    setConfirmDialog({
+      isOpen: true,
+      title: '清除所有对话',
+      message: '确定要清除所有对话历史吗？此操作不可恢复。',
+      onConfirm: () => {
+        const defaultConv: Conversation = {
+          id: 'default',
+          title: 'New Conversation',
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+        setConversations([defaultConv]);
+        setCurrentConversationId('default');
+        
+        // 清除对话数据（保留默认对话的欢迎消息）
+        const defaultData = {
+          default: {
+            messages: [{
+              id: 'welcome',
+              role: 'assistant',
+              content: "Welcome to ScholarPulse Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
+              timestamp: new Date()
+            }],
+            papers: []
+          }
+        };
+        setConversationData(defaultData);
+        localStorage.setItem('conversation_data', JSON.stringify(defaultData));
+        setConfirmDialog(null);
+      }
+    });
+  };
+
+  // 删除单个对话（直接删除，不需要弹窗）
+  const handleDeleteConversation = (conversationId: string) => {
+    // 检查是否只剩最后一个对话框，如果是则不允许删除
+    if (conversations.length <= 1) {
+      return;
+    }
+    
+    // 标记正在删除，避免 useEffect 干扰
+    isDeletingRef.current = conversationId;
+    
+    // 判断是否删除的是当前对话框
+    const isCurrentConversation = currentConversationId === conversationId;
+    
+    // 先删除对话数据
+    setConversationData(prev => {
+      const updated = { ...prev };
+      delete updated[conversationId];
+      localStorage.setItem('conversation_data', JSON.stringify(updated));
+      return updated;
+    });
+    
+    // 使用函数式更新确保所有状态更新是原子的
+    setConversations(prev => {
+      const filtered = prev.filter(conv => conv.id !== conversationId);
+      
+      // 如果删除的是当前对话框，跳转到删除后的第一个对话框（从上往下）
+      if (isCurrentConversation && filtered.length > 0) {
+        const firstConversationId = filtered[0].id;
+        // 使用 setTimeout 确保在状态更新后切换
+        setTimeout(() => {
+          setCurrentConversationId(firstConversationId);
+        }, 0);
+      }
+      
+      return filtered;
+    });
+    
+    // 清除删除标记（在下一个事件循环中，确保所有状态更新完成）
+    setTimeout(() => {
+      isDeletingRef.current = null;
+    }, 0);
+  };
+
   // 更新对话标题（基于第一条用户消息）
   const updateConversationTitle = (conversationId: string, title: string) => {
     setConversations(prev => prev.map(conv => 
@@ -264,10 +499,9 @@ const App: React.FC = () => {
   const handleSend = async () => {
     if (!input.trim() || isLoading || filter.venues.length === 0) return;
 
-    if (!isRegistered && trialsUsed >= MAX_FREE_TRIALS) {
-      setShowRegModal(true);
-      return;
-    }
+    // 保存发起搜索时的对话 ID，确保结果保存到正确的对话
+    const searchConversationId = currentConversationId;
+    searchingConversationIdRef.current = searchConversationId; // 标记正在搜索的对话
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -276,18 +510,48 @@ const App: React.FC = () => {
       timestamp: new Date()
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    // 保存用户消息到发起搜索的对话
+    setConversationData(prev => {
+      const updated = { ...prev };
+      if (!updated[searchConversationId]) {
+        updated[searchConversationId] = { messages: [], papers: [] };
+      }
+      updated[searchConversationId].messages = [
+        ...(updated[searchConversationId].messages || []),
+        userMessage
+      ];
+      localStorage.setItem('conversation_data', JSON.stringify(updated));
+      return updated;
+    });
+    
+    // 如果当前对话是发起搜索的对话，更新 UI
+    if (currentConversationId === searchConversationId) {
+      setMessages(prev => [...prev, userMessage]);
+    }
     
     // 如果是第一条用户消息，更新对话标题
-    if (messages.length === 1 && messages[0].id === 'welcome') {
-      updateConversationTitle(currentConversationId, input.trim());
+    const currentMessages = conversationData[searchConversationId]?.messages || messages;
+    if (currentMessages.length === 1 && currentMessages[0].id === 'welcome') {
+      updateConversationTitle(searchConversationId, input.trim());
     }
     
     setInput('');
     setIsLoading(true);
-    // 清空之前的论文列表和进度状态
-    setPapers([]);
-    setProgress({ step: '', status: 'idle' });
+    // 清空之前的论文列表和进度状态（仅当当前对话是发起搜索的对话时）
+    if (currentConversationId === searchConversationId) {
+      setPapers([]);
+      setProgress({ step: '', status: 'idle' });
+    }
+    // 更新对话数据中的进度状态
+    setConversationData(prev => {
+      const updated = { ...prev };
+      if (!updated[searchConversationId]) {
+        updated[searchConversationId] = { messages: [], papers: [] };
+      }
+      updated[searchConversationId].progress = { step: '', status: 'idle' };
+      localStorage.setItem('conversation_data', JSON.stringify(updated));
+      return updated;
+    });
     
     // API地址：始终使用相对路径，让nginx代理到后端
     // 这样无论前端在哪里运行（Docker或本地），都能通过nginx正确代理
@@ -313,13 +577,22 @@ const App: React.FC = () => {
     requestAbortControllerRef.current = abortController;
     
     try {
+      // 准备请求 headers
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+      };
+      
+      // 添加身份标识：登录用户用 Authorization，游客用 X-Anon-Id
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`;
+      } else {
+        headers['X-Anon-Id'] = anonId;
+      }
       
       // 使用SSE接收实时进度
       const response = await fetch(apiEndpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         signal: abortController.signal, // 添加AbortSignal支持
         body: JSON.stringify({
           query: input,
@@ -332,8 +605,81 @@ const App: React.FC = () => {
         })
       });
 
+      // 检查配额错误（402 Payment Required 或 403 Forbidden）
+      if (response.status === 402 || response.status === 403) {
+        let errorData: any = {};
+        try {
+          const contentType = response.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            errorData = await response.json();
+          } else {
+            // 如果不是 JSON，尝试读取文本
+            const text = await response.text();
+            try {
+              errorData = JSON.parse(text);
+            } catch {
+              // 如果解析失败，使用默认消息
+              errorData = {
+                code: 'QUOTA_EXCEEDED',
+                message: '配额已用完。游客可用3次，登录后50次，订阅无限。'
+              };
+            }
+          }
+        } catch (e) {
+          // 如果读取失败，使用默认消息
+          errorData = {
+            code: 'QUOTA_EXCEEDED',
+            message: '配额已用完。游客可用3次，登录后50次，订阅无限。'
+          };
+        }
+        
+        if (errorData.code === 'QUOTA_EXCEEDED' || response.status === 402 || response.status === 403) {
+          // 配额已用完
+          setQuotaRemaining(0);
+          setShowRegModal(true);
+          const errorMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content: errorData.message || errorData.detail?.message || '配额已用完。游客可用3次，登录后50次，订阅无限。',
+            timestamp: new Date()
+          };
+          // 保存错误消息到发起搜索的对话
+          setConversationData(prev => {
+            const updated = { ...prev };
+            if (!updated[searchConversationId]) {
+              updated[searchConversationId] = { messages: [], papers: [] };
+            }
+            updated[searchConversationId].messages = [
+              ...(updated[searchConversationId].messages || []),
+              errorMessage
+            ];
+            updated[searchConversationId].papers = [];
+            localStorage.setItem('conversation_data', JSON.stringify(updated));
+            return updated;
+          });
+          // 如果当前对话是发起搜索的对话，更新 UI
+          if (currentConversationId === searchConversationId) {
+            setMessages(prev => [...prev, errorMessage]);
+            setPapers([]);
+          }
+          setIsLoading(false);
+          return;
+        }
+      }
+
       if (!response.ok) {
         throw new Error('Search request failed');
+      }
+      
+      // 从响应 header 中获取剩余配额（如果后端返回，且用户不是 pro）
+      if (userPlan !== 'pro') {
+        const remainingHeader = response.headers.get('X-Quota-Remaining');
+        if (remainingHeader) {
+          const remaining = parseInt(remainingHeader, 10);
+          if (!isNaN(remaining)) {
+            setQuotaRemaining(remaining);
+          }
+        }
       }
 
       if (!response.body) {
@@ -361,12 +707,32 @@ const App: React.FC = () => {
           
           if (event === 'progress') {
             eventCount.progress++;
-            // 更新进度
-            setProgress({
+            // 更新进度到发起搜索的对话数据中
+            const progressData = {
               step: parsedData.step,
               status: parsedData.status,
               message: parsedData.message
+            };
+            setConversationData(prev => {
+              const updated = { ...prev };
+              if (!updated[searchConversationId]) {
+                updated[searchConversationId] = { messages: [], papers: [] };
+              }
+              updated[searchConversationId].progress = progressData;
+              localStorage.setItem('conversation_data', JSON.stringify(updated));
+              return updated;
             });
+            // 如果当前对话是发起搜索的对话，更新 UI
+            if (currentConversationId === searchConversationId) {
+              setProgress(progressData);
+            }
+            // 更新配额信息（如果 SSE 事件中包含，且用户不是 pro）
+            if (parsedData.quota_remaining !== undefined && userPlan !== 'pro') {
+              const quota = parseInt(parsedData.quota_remaining, 10);
+              if (!isNaN(quota)) {
+                setQuotaRemaining(quota);
+              }
+            }
           } else if (event === 'result') {
             eventCount.result++;
             // 保存结果数据
@@ -377,6 +743,13 @@ const App: React.FC = () => {
             });
             resultData = parsedData;
             hasReceivedResult = true; // 标记已收到result事件
+            // 更新配额信息（如果 SSE 事件中包含，且用户不是 pro）
+            if (parsedData.quota_remaining !== undefined && userPlan !== 'pro') {
+              const quota = parseInt(parsedData.quota_remaining, 10);
+              if (!isNaN(quota)) {
+                setQuotaRemaining(quota);
+              }
+            }
           } else if (event === 'error') {
             eventCount.error++;
             // 收到错误事件，生成错误消息
@@ -386,9 +759,37 @@ const App: React.FC = () => {
               content: parsedData.message || parsedData.error || '搜索过程中出现错误。',
               timestamp: new Date()
             };
-            setMessages(prev => [...prev, errorMessage]);
-            setPapers([]);
-            setProgress({ step: 'error', status: 'error', message: '搜索失败' });
+            // 保存错误消息到发起搜索的对话
+            setConversationData(prev => {
+              const updated = { ...prev };
+              if (!updated[searchConversationId]) {
+                updated[searchConversationId] = { messages: [], papers: [] };
+              }
+              updated[searchConversationId].messages = [
+                ...(updated[searchConversationId].messages || []),
+                errorMessage
+              ];
+              updated[searchConversationId].papers = [];
+              localStorage.setItem('conversation_data', JSON.stringify(updated));
+              return updated;
+            });
+            // 更新进度到发起搜索的对话数据中
+            const errorProgress = { step: 'error', status: 'error' as const, message: '搜索失败' };
+            setConversationData(prev => {
+              const updated = { ...prev };
+              if (!updated[searchConversationId]) {
+                updated[searchConversationId] = { messages: [], papers: [] };
+              }
+              updated[searchConversationId].progress = errorProgress;
+              localStorage.setItem('conversation_data', JSON.stringify(updated));
+              return updated;
+            });
+            // 如果当前对话是发起搜索的对话，更新 UI
+            if (currentConversationId === searchConversationId) {
+              setMessages(prev => [...prev, errorMessage]);
+              setPapers([]);
+              setProgress(errorProgress);
+            }
             throw new Error(parsedData.message || parsedData.error);
           }
         } catch (e) {
@@ -549,8 +950,25 @@ const App: React.FC = () => {
           content: '搜索过程中出现错误，未收到搜索结果。',
           timestamp: new Date()
         };
-        setMessages(prev => [...prev, errorMessage]);
-        setPapers([]);
+        // 保存错误消息到发起搜索的对话
+        setConversationData(prev => {
+          const updated = { ...prev };
+          if (!updated[searchConversationId]) {
+            updated[searchConversationId] = { messages: [], papers: [] };
+          }
+          updated[searchConversationId].messages = [
+            ...(updated[searchConversationId].messages || []),
+            errorMessage
+          ];
+          updated[searchConversationId].papers = [];
+          localStorage.setItem('conversation_data', JSON.stringify(updated));
+          return updated;
+        });
+        // 如果当前对话是发起搜索的对话，更新 UI
+        if (currentConversationId === searchConversationId) {
+          setMessages(prev => [...prev, errorMessage]);
+          setPapers([]);
+        }
         return; // 直接返回，不抛出错误，避免进入catch块
       }
       
@@ -578,7 +996,6 @@ const App: React.FC = () => {
 
       // 使用过滤后的论文
       const papersList = resultData.papers || [];
-      setPapers(papersList);
       console.log('设置论文列表:', papersList.length, '篇');
 
       // 根据不同的情况生成不同的消息
@@ -605,13 +1022,53 @@ const App: React.FC = () => {
         timestamp: new Date()
       };
 
-      setMessages(prev => [...prev, assistantMessage]);
+      // 保存结果到发起搜索的对话（而不是当前对话）
+      setConversationData(prev => {
+        const updated = { ...prev };
+        if (!updated[searchConversationId]) {
+          updated[searchConversationId] = { messages: [], papers: [] };
+        }
+        // 获取当前对话的消息列表（可能已经包含用户消息）
+        const currentMessages = updated[searchConversationId].messages || [];
+        // 检查是否已经有助手消息（避免重复添加）
+        const hasAssistantMessage = currentMessages.some(
+          msg => msg.role === 'assistant' && msg.id === assistantMessage.id
+        );
+        if (!hasAssistantMessage) {
+          updated[searchConversationId].messages = [...currentMessages, assistantMessage];
+        }
+        updated[searchConversationId].papers = papersList;
+        localStorage.setItem('conversation_data', JSON.stringify(updated));
+        return updated;
+      });
       
-      // 更新进度为完成
-      setProgress({ step: 'completed', status: 'completed', message: '搜索完成' });
-
-      if (!isRegistered) {
-        setTrialsUsed(prev => prev + 1);
+      // 如果当前对话是发起搜索的对话，更新 UI
+      if (currentConversationId === searchConversationId) {
+        setMessages(prev => {
+          // 检查是否已经包含这条消息（避免重复）
+          const hasMessage = prev.some(msg => msg.id === assistantMessage.id);
+          if (hasMessage) {
+            return prev;
+          }
+          return [...prev, assistantMessage];
+        });
+        setPapers(papersList);
+      }
+      
+      // 更新进度为完成（保存到发起搜索的对话数据中）
+      const completedProgress = { step: 'completed', status: 'completed' as const, message: '搜索完成' };
+      setConversationData(prev => {
+        const updated = { ...prev };
+        if (!updated[searchConversationId]) {
+          updated[searchConversationId] = { messages: [], papers: [] };
+        }
+        updated[searchConversationId].progress = completedProgress;
+        localStorage.setItem('conversation_data', JSON.stringify(updated));
+        return updated;
+      });
+      // 如果当前对话是发起搜索的对话，更新 UI
+      if (currentConversationId === searchConversationId) {
+        setProgress(completedProgress);
       }
     } catch (error) {
       // 如果是请求被取消（AbortError），不显示错误消息
@@ -620,7 +1077,6 @@ const App: React.FC = () => {
         return;
       }
       
-      setProgress({ step: 'error', status: 'error', message: '搜索失败' });
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error('API调用错误:', errorMessage, 'Endpoint:', apiEndpoint || 'unknown');
       
@@ -633,21 +1089,63 @@ const App: React.FC = () => {
         return;
       }
       
-      setMessages(prev => [...prev, {
+      // 使用函数开头保存的 searchConversationId（发起搜索时的对话 ID）
+      const errorMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: userMessage,
         timestamp: new Date()
-      }]);
-      setPapers([]);
+      };
+      
+      // 更新进度到发起搜索的对话数据中
+      const errorProgress = { step: 'error', status: 'error' as const, message: '搜索失败' };
+      
+      // 保存错误消息和进度到发起搜索的对话
+      setConversationData(prev => {
+        const updated = { ...prev };
+        if (!updated[searchConversationId]) {
+          updated[searchConversationId] = { messages: [], papers: [] };
+        }
+        updated[searchConversationId].messages = [
+          ...(updated[searchConversationId].messages || []),
+          errorMsg
+        ];
+        updated[searchConversationId].papers = [];
+        updated[searchConversationId].progress = errorProgress;
+        localStorage.setItem('conversation_data', JSON.stringify(updated));
+        return updated;
+      });
+      
+      // 如果当前对话是发起搜索的对话，更新 UI
+      if (currentConversationId === searchConversationId) {
+        setMessages(prev => [...prev, errorMsg]);
+        setPapers([]);
+        setProgress(errorProgress);
+      }
     } finally {
       setIsLoading(false);
       // 清除AbortController引用
       if (requestAbortControllerRef.current === abortController) {
         requestAbortControllerRef.current = null;
       }
+      // 清除正在搜索的对话标记
+      if (searchingConversationIdRef.current === searchConversationId) {
+        searchingConversationIdRef.current = null;
+      }
+      // 2秒后重置进度（仅当当前对话是发起搜索的对话时）
       setTimeout(() => {
-        setProgress({ step: '', status: 'idle' });
+        if (currentConversationId === searchConversationId) {
+          setProgress({ step: '', status: 'idle' });
+        }
+        // 更新对话数据中的进度状态
+        setConversationData(prev => {
+          const updated = { ...prev };
+          if (updated[searchConversationId]) {
+            updated[searchConversationId].progress = { step: '', status: 'idle' };
+            localStorage.setItem('conversation_data', JSON.stringify(updated));
+          }
+          return updated;
+        });
       }, 2000);
     }
   };
@@ -661,6 +1159,8 @@ const App: React.FC = () => {
         currentConversationId={currentConversationId}
         onNewConversation={handleNewConversation}
         onSwitchConversation={handleSwitchConversation}
+        onClearConversations={handleClearConversations}
+        onDeleteConversation={handleDeleteConversation}
       />
       
       <main className="flex-1 flex flex-col h-full relative overflow-hidden border-l border-academic-blue-200 dark:border-[#3c4043]">
@@ -715,26 +1215,74 @@ const App: React.FC = () => {
               )}
             </button>
 
-            {!isRegistered && (
+            {/* 配额显示：匿名用户和 free 用户显示，pro 用户不显示 */}
+            {(!user || userPlan === 'free') && (
               <div className="hidden sm:flex items-center gap-3 pr-4 border-r border-academic-blue-300 dark:border-[#3c4043]">
-                <span className="text-[9px] font-bold text-academic-blue-400 dark:text-[#9aa0a6] uppercase tracking-tighter">Quota</span>
+                <span className="text-[9px] font-bold text-academic-blue-400 dark:text-[#9aa0a6] uppercase tracking-tighter">
+                  {!user ? 'Guest' : 'Free'}
+                </span>
+                {(() => {
+                  // 根据用户类型确定最大配额
+                  const maxQuota = !user ? MAX_FREE_TRIALS : MAX_FREE_USER_QUOTA;
+                  // 如果配额未知，显示最大配额（表示还未使用）
+                  const displayQuota = quotaRemaining !== null ? quotaRemaining : maxQuota;
+                  
+                  return (
+                    <>
                 <div className="flex gap-1">
-                  {[...Array(MAX_FREE_TRIALS)].map((_, i) => (
-                    <div key={i} className={`h-1.5 w-4 rounded-full transition-all ${i < trialsUsed ? 'bg-academic-blue-200 dark:bg-[#3c4043]' : 'bg-academic-blue-800 dark:bg-[#8ab4f8] shadow-sm'}`} />
-                  ))}
+                        {[...Array(maxQuota)].map((_, i) => {
+                          // 根据剩余配额显示：已使用的（灰色）和剩余的（蓝色）
+                          // 已使用次数 = maxQuota - quotaRemaining
+                          // 如果 quotaRemaining 为 null，表示还未获取配额信息，全部显示为蓝色（未使用）
+                          const isUsed = quotaRemaining !== null 
+                            ? i < (maxQuota - quotaRemaining)
+                            : false;
+                          return (
+                            <div 
+                              key={i} 
+                              className={`h-1.5 w-4 rounded-full shadow-sm transition-colors ${
+                                isUsed 
+                                  ? 'bg-academic-blue-200 dark:bg-[#3c4043]' 
+                                  : 'bg-academic-blue-800 dark:bg-[#8ab4f8]'
+                              }`} 
+                            />
+                          );
+                        })}
                 </div>
+                      <span className="text-[9px] font-bold text-academic-blue-500 dark:text-[#9aa0a6]">
+                        {displayQuota}/{maxQuota}
+                      </span>
+                    </>
+                  );
+                })()}
+                {/* 开发测试：重置配额按钮 */}
+                {process.env.NODE_ENV === 'development' && (
+                  <button
+                    onClick={() => {
+                      if (confirm('确定要重置游客配额吗？这将清除当前游客 ID。')) {
+                        localStorage.removeItem('anon_id');
+                        setQuotaRemaining(null);
+                        window.location.reload();
+                      }
+                    }}
+                    className="ml-2 text-[8px] text-academic-blue-400 dark:text-[#9aa0a6] hover:text-academic-blue-600 dark:hover:text-[#bdc1c6] underline"
+                    title="重置配额（仅开发模式）"
+                  >
+                    Reset
+                  </button>
+                )}
               </div>
             )}
 
             <button 
-              onClick={isRegistered ? undefined : () => setShowRegModal(true)}
+              onClick={user ? undefined : () => setShowRegModal(true)}
               className={`px-4 py-1.5 rounded-lg text-[11px] font-bold transition-all shadow-sm ${
-                isRegistered 
+                user 
                 ? 'bg-academic-blue-50 dark:bg-[#3c4043] text-academic-blue-700 dark:text-[#e8eaed]'
                 : 'bg-academic-blue-800 text-white dark:bg-[#8ab4f8] dark:text-academic-blue-1000 hover:brightness-110 active:scale-95'
               }`}
             >
-              {isRegistered ? 'Verified Profile' : 'Authenticate'}
+              {user ? (user.email || 'Verified Profile') : 'Authenticate'}
             </button>
           </div>
         </header>
@@ -801,7 +1349,7 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {isLoading && (
+            {isLoading && searchingConversationIdRef.current === currentConversationId && (
               <div className="space-y-4">
                 <div className="flex justify-start gap-5">
                   <div className="w-8 h-8 rounded-lg bg-academic-blue-50 dark:bg-academic-blue-950 animate-pulse border border-academic-blue-200 dark:border-[#3c4043]" />
@@ -949,7 +1497,22 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {showRegModal && <RegistrationModal onRegister={handleRegister} />}
+        {showRegModal && (
+          <RegistrationModal 
+            onRegister={handleRegister} 
+            onClose={() => setShowRegModal(false)}
+          />
+        )}
+
+        {confirmDialog && (
+          <ConfirmDialog
+            isOpen={confirmDialog.isOpen}
+            title={confirmDialog.title}
+            message={confirmDialog.message}
+            onConfirm={confirmDialog.onConfirm}
+            onCancel={() => setConfirmDialog(null)}
+          />
+        )}
       </main>
     </div>
   );

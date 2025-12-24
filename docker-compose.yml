@@ -25,6 +25,8 @@ services:
       dockerfile: Dockerfile
       args:
         - VITE_API_URL=
+        - VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-https://nfikhewegqgryxnavslu.supabase.co}
+        - VITE_SUPABASE_PUBLISHABLE_KEY=${VITE_SUPABASE_PUBLISHABLE_KEY:-sb_publishable_2Amibt7M_i5sCQkyOnjC5Q_MzGcm6Wm}
     container_name: find_paper_frontend_20251223
     ports:
       - "3000:80"

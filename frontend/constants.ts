@@ -114,4 +114,5 @@ export const DOMAINS: DomainFilter[] = [
   }
 ];
 
-export const MAX_FREE_TRIALS = 3;
+export const MAX_FREE_TRIALS = 3;  // 匿名用户配额
+export const MAX_FREE_USER_QUOTA = 50;  // 注册用户（free plan）配额
