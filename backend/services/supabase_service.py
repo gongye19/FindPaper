@@ -19,8 +19,6 @@ except ImportError:
 
 # 加载环境变量
 env_path = Path(__file__).parent.parent / ".env"
-if not env_path.exists():
-    env_path = Path(__file__).parent.parent / ".env.dev"
 if env_path.exists():
     load_dotenv(env_path)
 

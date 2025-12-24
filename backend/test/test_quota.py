@@ -93,14 +93,10 @@ def main():
     
     # 先加载环境变量（在导入服务之前）
     from dotenv import load_dotenv
-    env_path = Path(__file__).parent.parent / ".env.dev"
+    env_path = Path(__file__).parent.parent / ".env"
     if env_path.exists():
         load_dotenv(env_path, override=True)
         print(f"已加载环境变量: {env_path}")
-    else:
-        env_path = Path(__file__).parent.parent / ".env"
-        if env_path.exists():
-            load_dotenv(env_path, override=True)
             print(f"已加载环境变量: {env_path}")
         else:
             print(f"环境变量文件不存在")

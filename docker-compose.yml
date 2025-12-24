@@ -10,7 +10,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
-      - ./backend/.env.dev:/app/.env:ro
+      - ./backend/.env:/app/.env:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:8000/')"]

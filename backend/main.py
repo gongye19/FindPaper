@@ -33,10 +33,8 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 # 配置加载
 # ==============================
 
-# 加载环境变量（优先.env，其次.env.dev）
+# 加载环境变量
 env_path = Path(__file__).parent / ".env"
-if not env_path.exists():
-    env_path = Path(__file__).parent / ".env.dev"
 if env_path.exists():
     load_dotenv(env_path)
     logger.info(f"已加载环境变量文件: {env_path}")

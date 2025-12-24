@@ -12,7 +12,7 @@ from services.llm_service import LLMService
 from dotenv import load_dotenv
 
 # 加载环境变量
-env_path = Path(__file__).parent.parent / ".env.dev"
+env_path = Path(__file__).parent.parent / ".env"
 if env_path.exists():
     load_dotenv(env_path)
     print(f"✓ 已加载环境变量文件: {env_path}")
