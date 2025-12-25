@@ -17,13 +17,15 @@ from schema import (
     SearchRequest, SearchResponse, Paper,
     FilterRequest, FilterResponse,
     PaperSearchRequest, PaperSearchResponse,
-    ErrorResponse
+    ErrorResponse,
+    CheckUserRequest, CheckUserResponse
 )
 from services.llm_service import LLMService
 from services.query_rewrite import QueryRewriteService
 from services.crossref_service import CrossRefService
 from services.semantic_scholar_service import SemanticScholarService
 from services.paper_filtering import PaperFilteringService
+from services.supabase_service import get_supabase_service
 from middleware.quota_guard import get_quota_guard
 
 # 配置日志
@@ -270,7 +272,8 @@ async def root():
             "v1/query_rewrite": "POST - 查询改写服务",
             "v1/paper_retrieval": "POST - 论文检索服务",
             "v1/paper_filtering": "POST - 论文过滤服务",
-            "v1/quota": "GET - 获取用户配额信息"
+            "v1/quota": "GET - 获取用户配额信息",
+            "v1/check_user": "POST - 检查用户是否存在"
         }
     }
 
@@ -294,6 +297,25 @@ async def get_quota(http_request: Request):
         }
     
     return quota_info
+
+
+@app.post("/v1/check_user", response_model=CheckUserResponse)
+async def check_user(request: CheckUserRequest):
+    """
+    检查用户是否存在（通过邮箱）
+    """
+    try:
+        supabase_service = get_supabase_service()
+        exists = supabase_service.check_user_exists(request.email)
+        
+        return CheckUserResponse(
+            email=request.email,
+            exists=exists,
+            success=True
+        )
+    except Exception as e:
+        logger.error(f"检查用户是否存在出错: {e}")
+        raise HTTPException(status_code=500, detail=f"检查用户失败: {str(e)}")
 
 
 @app.post("/v1/query_rewrite", response_model=QueryRewriteResponse)

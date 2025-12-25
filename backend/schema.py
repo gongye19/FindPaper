@@ -118,3 +118,19 @@ class ErrorResponse(BaseModel):
     """错误响应"""
     error: str = Field(..., description="错误信息")
     details: Optional[str] = Field(None, description="错误详情")
+
+
+# ==============================
+# 用户检查服务 Schema
+# ==============================
+
+class CheckUserRequest(BaseModel):
+    """检查用户是否存在请求"""
+    email: str = Field(..., description="用户邮箱", example="user@example.com")
+
+
+class CheckUserResponse(BaseModel):
+    """检查用户是否存在响应"""
+    email: str = Field(..., description="查询的邮箱")
+    exists: bool = Field(..., description="用户是否存在")
+    success: bool = Field(..., description="是否成功")

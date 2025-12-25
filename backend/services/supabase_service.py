@@ -172,6 +172,105 @@ class SupabaseService:
         except Exception as e:
             logger.error(f"获取用户配额信息出错: {e}")
             return None
+    
+    def check_user_exists(self, email: str) -> bool:
+        """
+        检查用户是否存在（通过邮箱）
+        使用 Supabase Admin API 查询 auth.users 表
+        
+        :param email: 用户邮箱
+        :return: True 表示用户存在，False 表示不存在
+        """
+        if not self.client:
+            logger.warning("Supabase 服务不可用，无法检查用户是否存在")
+            return False
+        
+        if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
+            logger.error("Supabase 配置缺失：SUPABASE_URL 或 SUPABASE_SECRET_KEY 未设置")
+            return False
+        
+        try:
+            import requests
+            # Supabase Admin API: 通过邮箱查询用户
+            # 注意：Admin API 需要使用正确的端点
+            admin_url = f"{SUPABASE_URL}/auth/v1/admin/users"
+            headers = {
+                "apikey": SUPABASE_SECRET_KEY,
+                "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            # Supabase Admin API 支持通过 email 查询参数过滤
+            # 但可能需要先获取所有用户，然后过滤
+            # 为了效率，我们先尝试直接查询，如果失败则获取所有用户
+            logger.info(f"开始检查用户是否存在: email={email}")
+            
+            # 方法1：尝试直接通过 email 参数查询（某些版本的 Supabase 支持）
+            resp = requests.get(
+                admin_url, 
+                headers=headers, 
+                params={"email": email}, 
+                timeout=10
+            )
+            
+            logger.debug(f"Admin API 响应状态: {resp.status_code}")
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                logger.debug(f"Admin API 响应数据: {data}")
+                
+                # 处理不同的响应格式
+                if isinstance(data, dict):
+                    users = data.get("users", [])
+                elif isinstance(data, list):
+                    users = data
+                else:
+                    users = []
+                
+                # 检查是否有匹配的邮箱（不区分大小写）
+                exists = any(
+                    str(user.get("email", "")).lower() == email.lower() 
+                    for user in users
+                )
+                logger.info(f"检查用户是否存在结果: email={email}, exists={exists}, 找到用户数={len(users)}")
+                return exists
+            else:
+                # 如果直接查询失败，尝试获取所有用户然后过滤（效率较低，但更可靠）
+                logger.warning(f"直接查询失败 (HTTP {resp.status_code})，尝试获取所有用户后过滤")
+                resp_all = requests.get(admin_url, headers=headers, timeout=10)
+                
+                if resp_all.status_code == 200:
+                    data_all = resp_all.json()
+                    if isinstance(data_all, dict):
+                        users_all = data_all.get("users", [])
+                    elif isinstance(data_all, list):
+                        users_all = data_all
+                    else:
+                        users_all = []
+                    
+                    # 过滤匹配的邮箱
+                    exists = any(
+                        str(user.get("email", "")).lower() == email.lower() 
+                        for user in users_all
+                    )
+                    logger.info(f"检查用户是否存在结果（全量查询）: email={email}, exists={exists}")
+                    return exists
+                else:
+                    logger.error(f"获取所有用户失败: HTTP {resp_all.status_code}, response: {resp_all.text[:200]}")
+                    return False
+                
+        except requests.exceptions.Timeout:
+            logger.error(f"检查用户是否存在超时: email={email}")
+            return False
+        except requests.exceptions.RequestException as e:
+            logger.error(f"检查用户是否存在网络错误: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"检查用户是否存在出错: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return False
+    
 
 
 # 全局单例

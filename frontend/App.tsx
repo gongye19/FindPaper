@@ -3,6 +3,7 @@ import React from 'react';
 import Sidebar from './components/Sidebar';
 import RegistrationModal from './components/RegistrationModal';
 import ConfirmDialog from './components/ConfirmDialog';
+import ChangePasswordModal from './components/ChangePasswordModal';
 import { FilterState, Message, Conversation } from './types';
 import { MAX_FREE_TRIALS, MAX_FREE_USER_QUOTA } from './constants';
 import { getSession, getCurrentUser, onAuthStateChange, getUserPlan } from './services/auth';
@@ -59,6 +60,7 @@ const App: React.FC = () => {
     return newId;
   });
   const [showRegModal, setShowRegModal] = useState(false);
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   // 配额状态
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null); // null 表示未知，数字表示剩余次数
   const [userPlan, setUserPlan] = useState<'free' | 'pro' | null>(null); // 用户计划
@@ -1274,16 +1276,41 @@ const App: React.FC = () => {
               </div>
             )}
 
-            <button 
-              onClick={user ? undefined : () => setShowRegModal(true)}
-              className={`px-4 py-1.5 rounded-lg text-[11px] font-bold transition-all shadow-sm ${
-                user 
-                ? 'bg-academic-blue-50 dark:bg-[#3c4043] text-academic-blue-700 dark:text-[#e8eaed]'
-                : 'bg-academic-blue-800 text-white dark:bg-[#8ab4f8] dark:text-academic-blue-1000 hover:brightness-110 active:scale-95'
-              }`}
-            >
-              {user ? (user.email || 'Verified Profile') : 'Authenticate'}
-            </button>
+            {user ? (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowChangePasswordModal(true)}
+                  className="px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all shadow-sm bg-academic-blue-100 dark:bg-[#3c4043] text-academic-blue-700 dark:text-[#e8eaed] hover:bg-academic-blue-200 dark:hover:bg-[#404040]"
+                  title="Change Password"
+                >
+                  Change Password
+                </button>
+                <button
+                  onClick={async () => {
+                    const { signOut } = await import('./services/auth');
+                    await signOut();
+                    setUser(null);
+                    setSession(null);
+                    setUserPlan(null);
+                    setQuotaRemaining(null);
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all shadow-sm bg-academic-blue-50 dark:bg-[#3c4043] text-academic-blue-700 dark:text-[#e8eaed] hover:bg-academic-blue-200 dark:hover:bg-[#404040]"
+                  title="Sign Out"
+                >
+                  Sign Out
+                </button>
+                <span className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-academic-blue-50 dark:bg-[#3c4043] text-academic-blue-700 dark:text-[#e8eaed]">
+                  {user.email || 'Verified Profile'}
+                </span>
+              </div>
+            ) : (
+              <button 
+                onClick={() => setShowRegModal(true)}
+                className="px-4 py-1.5 rounded-lg text-[11px] font-bold transition-all shadow-sm bg-academic-blue-800 text-white dark:bg-[#8ab4f8] dark:text-academic-blue-1000 hover:brightness-110 active:scale-95"
+              >
+                Authenticate
+              </button>
+            )}
           </div>
         </header>
 
@@ -1511,6 +1538,15 @@ const App: React.FC = () => {
             message={confirmDialog.message}
             onConfirm={confirmDialog.onConfirm}
             onCancel={() => setConfirmDialog(null)}
+          />
+        )}
+
+        {showChangePasswordModal && (
+          <ChangePasswordModal
+            onClose={() => setShowChangePasswordModal(false)}
+            onSuccess={() => {
+              setShowChangePasswordModal(false);
+            }}
           />
         )}
       </main>

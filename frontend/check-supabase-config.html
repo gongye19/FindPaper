@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supabase 配置检查工具</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .check-item {
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            border-left: 4px solid #ddd;
+        }
+        .success {
+            background: #d4edda;
+            border-color: #28a745;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            border-color: #dc3545;
+            color: #721c24;
+        }
+        .warning {
+            background: #fff3cd;
+            border-color: #ffc107;
+            color: #856404;
+        }
+        .info {
+            background: #d1ecf1;
+            border-color: #17a2b8;
+            color: #0c5460;
+        }
+        code {
+            background: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        .btn {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+        .btn:hover {
+            background: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Supabase 配置检查工具</h1>
+        <div id="results"></div>
+        <button class="btn" onclick="checkConfig()">重新检查</button>
+    </div>
+
+    <script type="module">
+        function checkConfig() {
+            const results = document.getElementById('results');
+            results.innerHTML = '<p>正在检查...</p>';
+
+            // 检查环境变量（在浏览器中无法直接读取 .env，但可以检查构建后的值）
+            const checks = [];
+
+            // 检查 Supabase URL
+            const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || import.meta.env.VITE_PROJECT_URL;
+            if (supabaseUrl) {
+                checks.push({
+                    type: 'success',
+                    title: '✅ Supabase URL 已配置',
+                    message: `URL: ${supabaseUrl.substring(0, 30)}...`
+                });
+            } else {
+                checks.push({
+                    type: 'error',
+                    title: '❌ Supabase URL 未配置',
+                    message: '请在 frontend/.env 文件中设置 VITE_SUPABASE_URL 或 VITE_PROJECT_URL'
+                });
+            }
+
+            // 检查 Supabase Key
+            const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY;
+            if (supabaseKey) {
+                checks.push({
+                    type: 'success',
+                    title: '✅ Supabase Key 已配置',
+                    message: `Key 长度: ${supabaseKey.length} 字符`
+                });
+            } else {
+                checks.push({
+                    type: 'error',
+                    title: '❌ Supabase Key 未配置',
+                    message: '请在 frontend/.env 文件中设置 VITE_SUPABASE_PUBLISHABLE_KEY 或 VITE_SUPABASE_ANON_KEY'
+                });
+            }
+
+            // 测试 Supabase 连接
+            if (supabaseUrl && supabaseKey) {
+                checks.push({
+                    type: 'info',
+                    title: 'ℹ️ 测试 Supabase 连接',
+                    message: '尝试连接到 Supabase...'
+                });
+
+                // 尝试导入并测试
+                import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm').then(({ createClient }) => {
+                    try {
+                        const supabase = createClient(supabaseUrl, supabaseKey);
+                        // 尝试一个简单的 API 调用
+                        supabase.auth.getSession().then(({ data, error }) => {
+                            if (error && error.message.includes('Invalid API key')) {
+                                checks.push({
+                                    type: 'error',
+                                    title: '❌ Supabase Key 无效',
+                                    message: '请检查 VITE_SUPABASE_PUBLISHABLE_KEY 是否正确'
+                                });
+                            } else {
+                                checks.push({
+                                    type: 'success',
+                                    title: '✅ Supabase 连接成功',
+                                    message: '可以正常连接到 Supabase 服务'
+                                });
+                            }
+                            renderResults(checks);
+                        }).catch(err => {
+                            checks.push({
+                                type: 'error',
+                                title: '❌ Supabase 连接失败',
+                                message: `错误: ${err.message}`
+                            });
+                            renderResults(checks);
+                        });
+                    } catch (err) {
+                        checks.push({
+                            type: 'error',
+                            title: '❌ 无法创建 Supabase 客户端',
+                            message: `错误: ${err.message}`
+                        });
+                        renderResults(checks);
+                    }
+                }).catch(err => {
+                    checks.push({
+                        type: 'warning',
+                        title: '⚠️ 无法加载 Supabase 库',
+                        message: '请确保网络连接正常'
+                    });
+                    renderResults(checks);
+                });
+            } else {
+                renderResults(checks);
+            }
+        }
+
+        function renderResults(checks) {
+            const results = document.getElementById('results');
+            results.innerHTML = checks.map(check => `
+                <div class="check-item ${check.type}">
+                    <strong>${check.title}</strong>
+                    <p>${check.message}</p>
+                </div>
+            `).join('');
+        }
+
+        // 页面加载时自动检查
+        checkConfig();
+    </script>
+</body>
+</html>
+
