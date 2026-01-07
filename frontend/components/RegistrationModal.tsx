@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { signUp, signIn, checkUserExists, resetPassword } from '../services/auth';
+import { signUp, signIn, checkUserExists, resetPassword, ensureProfile } from '../services/auth';
 
 interface RegistrationModalProps {
   onRegister: () => void;
@@ -53,6 +53,19 @@ const RegistrationModal: React.FC<RegistrationModalProps> = ({ onRegister, onClo
           console.error('登录失败:', authError);
           setError(authError.message || '登录失败，请检查邮箱和密码');
         } else if (user && session) {
+          // 登录成功，确保 profile 存在
+          console.log('登录成功，确保用户 profile 存在...');
+          const profileResult = await ensureProfile(user.id, session);
+          if (profileResult.success) {
+            console.log('Profile 确保成功:', profileResult);
+            if (profileResult.created) {
+              console.log('新创建了 profile');
+            }
+          } else {
+            console.warn('Profile 确保失败:', profileResult.message);
+            // 不阻止登录流程，只记录警告
+          }
+          
           setSuccess('登录成功！');
           setTimeout(() => {
             onRegister();
@@ -134,6 +147,19 @@ const RegistrationModal: React.FC<RegistrationModalProps> = ({ onRegister, onClo
           if (session) {
             // 如果直接返回 session，说明邮箱验证已禁用，直接登录成功
             console.log('注册成功，直接登录');
+            
+            // 确保 profile 存在
+            if (user?.id) {
+              console.log('确保用户 profile 存在...');
+              const profileResult = await ensureProfile(user.id, session);
+              if (profileResult.success) {
+                console.log('Profile 确保成功:', profileResult);
+              } else {
+                console.warn('Profile 确保失败:', profileResult.message);
+                // 不阻止登录流程，只记录警告
+              }
+            }
+            
             setSuccess('注册成功！');
             setTimeout(() => {
               onRegister();
@@ -141,6 +167,21 @@ const RegistrationModal: React.FC<RegistrationModalProps> = ({ onRegister, onClo
           } else {
             // 需要邮箱验证
             console.log('注册成功，需要邮箱验证');
+            
+            // 即使需要邮箱验证，也尝试确保 profile 存在（以防触发器未执行）
+            if (user?.id) {
+              console.log('确保用户 profile 存在（邮箱验证模式）...');
+              // 注意：此时没有 session，但可以尝试调用（后端会验证 user_id）
+              const profileResult = await ensureProfile(user.id, null);
+              if (profileResult.success) {
+                console.log('Profile 确保成功:', profileResult);
+              } else {
+                console.warn('Profile 确保失败:', profileResult.message);
+                // 不阻止注册流程，只记录警告
+                // 如果失败，用户点击验证链接后可以再次尝试
+              }
+            }
+            
             setSuccess(`注册成功！我们已发送验证邮件到 ${email}，请点击邮件中的链接完成注册。`);
             // 不自动关闭，让用户看到提示
           }

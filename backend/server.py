@@ -18,7 +18,8 @@ from schema import (
     FilterRequest, FilterResponse,
     PaperSearchRequest, PaperSearchResponse,
     ErrorResponse,
-    CheckUserRequest, CheckUserResponse
+    CheckUserRequest, CheckUserResponse,
+    EnsureProfileRequest, EnsureProfileResponse
 )
 from services.llm_service import LLMService
 from services.query_rewrite import QueryRewriteService
@@ -273,7 +274,8 @@ async def root():
             "v1/paper_retrieval": "POST - 论文检索服务",
             "v1/paper_filtering": "POST - 论文过滤服务",
             "v1/quota": "GET - 获取用户配额信息",
-            "v1/check_user": "POST - 检查用户是否存在"
+            "v1/check_user": "POST - 检查用户是否存在",
+            "v1/ensure_profile": "POST - 确保用户 profile 存在"
         }
     }
 
@@ -316,6 +318,54 @@ async def check_user(request: CheckUserRequest):
     except Exception as e:
         logger.error(f"检查用户是否存在出错: {e}")
         raise HTTPException(status_code=500, detail=f"检查用户失败: {str(e)}")
+
+
+@app.post("/v1/ensure_profile", response_model=EnsureProfileResponse)
+async def ensure_profile(request: EnsureProfileRequest, http_request: Request):
+    """
+    确保用户的 profile 存在，如果不存在则创建
+    需要用户认证（通过 Authorization header 或 X-Anon-Id）
+    """
+    try:
+        # 验证用户身份
+        user_id = None
+        
+        # 1. 尝试从 Authorization header 获取登录用户
+        auth_header = http_request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            supabase_service = get_supabase_service()
+            if supabase_service.is_available():
+                user_info = supabase_service.verify_jwt_token(token)
+                if user_info and user_info.get("user_id"):
+                    user_id = user_info["user_id"]
+                    # 验证请求的 user_id 是否与 token 中的一致
+                    if user_id != request.user_id:
+                        logger.warning(f"用户 ID 不匹配: token={user_id}, request={request.user_id}")
+                        raise HTTPException(status_code=403, detail="用户 ID 不匹配")
+        
+        # 如果没有从 token 获取到，使用请求中的 user_id（可能是匿名用户或特殊情况）
+        if not user_id:
+            user_id = request.user_id
+        
+        if not user_id:
+            raise HTTPException(status_code=401, detail="需要用户认证")
+        
+        # 确保 profile 存在
+        supabase_service = get_supabase_service()
+        result = supabase_service.ensure_user_profile(user_id)
+        
+        return EnsureProfileResponse(
+            user_id=user_id,
+            created=result.get("created", False),
+            success=result.get("success", False),
+            message=result.get("message")
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"确保 profile 存在出错: {e}")
+        raise HTTPException(status_code=500, detail=f"确保 profile 失败: {str(e)}")
 
 
 @app.post("/v1/query_rewrite", response_model=QueryRewriteResponse)

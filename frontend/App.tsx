@@ -6,7 +6,7 @@ import ConfirmDialog from './components/ConfirmDialog';
 import ChangePasswordModal from './components/ChangePasswordModal';
 import { FilterState, Message, Conversation } from './types';
 import { MAX_FREE_TRIALS, MAX_FREE_USER_QUOTA } from './constants';
-import { getSession, getCurrentUser, onAuthStateChange, getUserPlan } from './services/auth';
+import { getSession, getCurrentUser, onAuthStateChange, getUserPlan, ensureProfile } from './services/auth';
 import type { User, Session } from '@supabase/supabase-js';
 
 interface Paper {
@@ -25,8 +25,7 @@ const App: React.FC = () => {
   const [filter, setFilter] = useState<FilterState>({
     domain: [],
     venues: ['NeurIPS (Neural Information Processing Systems)'],
-    startYear: 2025,
-    endYear: 2025
+    years: [currentYear] // 默认选择当前年份
   });
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem('theme');
@@ -134,7 +133,7 @@ const App: React.FC = () => {
         messages: [{
           id: 'welcome',
           role: 'assistant',
-          content: "Welcome to ScholarPulse Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
+          content: "Welcome to FindPaper Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
           timestamp: new Date()
         }],
         papers: []
@@ -147,7 +146,7 @@ const App: React.FC = () => {
     messages: [{
       id: 'welcome',
       role: 'assistant',
-      content: "Welcome to ScholarPulse Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
+      content: "Welcome to FindPaper Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
       timestamp: new Date()
     }],
     papers: []
@@ -174,7 +173,7 @@ const App: React.FC = () => {
       const initialMessages: Message[] = [{
         id: 'welcome',
         role: 'assistant',
-        content: "Welcome to ScholarPulse Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
+        content: "Welcome to FindPaper Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
         timestamp: new Date()
       }];
       setMessages(initialMessages);
@@ -279,6 +278,15 @@ const App: React.FC = () => {
         setSession(sess);
         setUser(sess?.user ?? null);
         if (sess?.user) {
+          // 确保 profile 存在（可能在邮箱验证后登录）
+          console.log('用户登录，确保 profile 存在...');
+          const profileResult = await ensureProfile(sess.user.id, sess);
+          if (profileResult.success) {
+            console.log('Profile 确保成功:', profileResult);
+          } else {
+            console.warn('Profile 确保失败:', profileResult.message);
+          }
+          
           const plan = await getUserPlan(sess.user.id);
           setUserPlan(plan);
           // 不设置配额，等待首次搜索时从后端获取
@@ -387,7 +395,7 @@ const App: React.FC = () => {
     const initialMessages: Message[] = [{
       id: 'welcome',
       role: 'assistant',
-      content: "Welcome to ScholarPulse Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
+      content: "Welcome to FindPaper Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
       timestamp: new Date()
     }];
     
@@ -433,7 +441,7 @@ const App: React.FC = () => {
             messages: [{
               id: 'welcome',
               role: 'assistant',
-              content: "Welcome to ScholarPulse Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
+              content: "Welcome to FindPaper Archive. I provide precise retrieval of high-impact research from elite academic venues. Specify your research parameters to begin.",
               timestamp: new Date()
             }],
             papers: []
@@ -599,8 +607,8 @@ const App: React.FC = () => {
         body: JSON.stringify({
           query: input,
           venues: filter.venues.map(v => v.split(' (')[0]), // 提取venue代码
-          start_year: filter.startYear,
-          end_year: filter.endYear,
+          start_year: filter.years.length > 0 ? Math.min(...filter.years) : currentYear,
+          end_year: filter.years.length > 0 ? Math.max(...filter.years) : currentYear,
           rows_each: 10,
           search_journal: true,
           search_conference: true
@@ -1081,11 +1089,26 @@ const App: React.FC = () => {
       
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error('API调用错误:', errorMessage, 'Endpoint:', apiEndpoint || 'unknown');
+      console.error('错误详情:', {
+        name: error instanceof Error ? error.name : 'Unknown',
+        message: errorMessage,
+        stack: error instanceof Error ? error.stack : undefined
+      });
       
-      // 判断是否是超时错误
+      // 判断错误类型并给出更具体的错误信息
       let userMessage = "Error: Retrieval grid unresponsive. Please verify your connection to the academic network.";
-      if (errorMessage.includes('aborted') || errorMessage.includes('timeout')) {
+      
+      if (errorMessage.includes('aborted') || errorMessage.includes('AbortError')) {
+        // 请求被取消，不显示错误
+        return;
+      } else if (errorMessage.includes('timeout') || errorMessage.includes('Timeout')) {
         userMessage = "Error: Request timeout. The search is taking longer than expected. Please try again with a simpler query or fewer venues.";
+      } else if (errorMessage.includes('Failed to fetch') || errorMessage.includes('NetworkError') || errorMessage.includes('ERR_')) {
+        userMessage = "Error: Unable to connect to the server. Please check if the backend service is running.";
+      } else if (errorMessage.includes('404') || errorMessage.includes('Not Found')) {
+        userMessage = "Error: API endpoint not found. Please check the backend configuration.";
+      } else if (errorMessage.includes('500') || errorMessage.includes('Internal Server Error')) {
+        userMessage = "Error: Server error occurred. Please try again later or contact support.";
       } else if (errorMessage.includes('未收到搜索结果')) {
         // 如果是因为未收到搜索结果，已经在上面处理了，这里不需要再处理
         return;
@@ -1169,7 +1192,7 @@ const App: React.FC = () => {
         {/* Academic Header - Balanced Height */}
         <header className="h-24 border-b border-academic-blue-200 dark:border-[#3c4043] bg-white/80 dark:bg-academic-blue-1000/80 backdrop-blur-md flex items-center justify-between px-6 sticky top-0 z-30 shrink-0">
           <div className="flex items-center gap-4 flex-1 overflow-hidden mr-4 h-full">
-            <h1 className="text-sm font-bold tracking-tight text-academic-blue-800 dark:text-white lg:hidden">ScholarPulse</h1>
+            <h1 className="text-sm font-bold tracking-tight text-academic-blue-800 dark:text-white lg:hidden">FindPaper</h1>
             <div className="hidden lg:flex items-center gap-4 flex-1 overflow-hidden h-full pt-3 pb-1">
               <div className="flex flex-col flex-1 overflow-hidden h-full justify-end">
                 <span className="text-[9px] font-bold text-academic-blue-500 dark:text-[#9aa0a6] uppercase tracking-[0.2em] mb-1.5 shrink-0">Archive Filter</span>
@@ -1178,7 +1201,10 @@ const App: React.FC = () => {
                   {/* Row 1: Time range box - Fixed position */}
                   <div className="flex shrink-0">
                     <span className="px-2 py-0.5 rounded bg-academic-blue-100 dark:bg-academic-blue-900/40 text-academic-blue-800 dark:text-[#8ab4f8] text-[9px] font-extrabold border border-academic-blue-300 dark:border-[#3c4043] uppercase whitespace-nowrap">
-                      {filter.startYear} - {filter.endYear}
+                      {filter.years.length > 0 
+                        ? filter.years.sort((a, b) => a - b).join(', ')
+                        : 'No years selected'
+                      }
                     </span>
                   </div>
                   
@@ -1220,71 +1246,98 @@ const App: React.FC = () => {
             {/* 配额显示：匿名用户和 free 用户显示，pro 用户不显示 */}
             {(!user || userPlan === 'free') && (
               <div className="hidden sm:flex items-center gap-3 pr-4 border-r border-academic-blue-300 dark:border-[#3c4043]">
-                <span className="text-[9px] font-bold text-academic-blue-400 dark:text-[#9aa0a6] uppercase tracking-tighter">
-                  {!user ? 'Guest' : 'Free'}
-                </span>
                 {(() => {
+                  // 根据显示的标签判断：如果显示 "Free"，一定是登录用户
+                  const labelText = !user ? 'Guest' : 'Free';
+                  const isGuestUser = labelText === 'Guest';
+                  
                   // 根据用户类型确定最大配额
-                  const maxQuota = !user ? MAX_FREE_TRIALS : MAX_FREE_USER_QUOTA;
+                  const maxQuota = isGuestUser ? MAX_FREE_TRIALS : MAX_FREE_USER_QUOTA;
                   // 如果配额未知，显示最大配额（表示还未使用）
                   const displayQuota = quotaRemaining !== null ? quotaRemaining : maxQuota;
                   
+                  // 调试日志
+                  console.log('配额显示调试:', {
+                    labelText,
+                    hasUser: !!user,
+                    hasSession: !!session,
+                    userPlan,
+                    isGuestUser,
+                    maxQuota,
+                    displayQuota,
+                    quotaRemaining
+                  });
+                  
                   return (
                     <>
-                <div className="flex gap-1">
-                        {[...Array(maxQuota)].map((_, i) => {
-                          // 根据剩余配额显示：已使用的（灰色）和剩余的（蓝色）
-                          // 已使用次数 = maxQuota - quotaRemaining
-                          // 如果 quotaRemaining 为 null，表示还未获取配额信息，全部显示为蓝色（未使用）
-                          const isUsed = quotaRemaining !== null 
-                            ? i < (maxQuota - quotaRemaining)
-                            : false;
-                          return (
-                            <div 
-                              key={i} 
-                              className={`h-1.5 w-4 rounded-full shadow-sm transition-colors ${
-                                isUsed 
-                                  ? 'bg-academic-blue-200 dark:bg-[#3c4043]' 
-                                  : 'bg-academic-blue-800 dark:bg-[#8ab4f8]'
-                              }`} 
-                            />
-                          );
-                        })}
-                </div>
-                      <span className="text-[9px] font-bold text-academic-blue-500 dark:text-[#9aa0a6]">
-                        {displayQuota}/{maxQuota}
+                      <span className="text-[9px] font-bold text-academic-blue-400 dark:text-[#9aa0a6] uppercase tracking-tighter">
+                        {labelText}
                       </span>
+                      
+                      {/* Guest 用户（未登录）：显示多个小条（只有 3 个） */}
+                      {isGuestUser ? (
+                        <>
+                          <div className="flex gap-1">
+                            {[...Array(maxQuota)].map((_, i) => {
+                              // 根据剩余配额显示：已使用的（灰色）和剩余的（蓝色）
+                              const isUsed = quotaRemaining !== null 
+                                ? i < (maxQuota - quotaRemaining)
+                                : false;
+                              return (
+                                <div 
+                                  key={i} 
+                                  className={`h-1.5 w-4 rounded-full shadow-sm transition-colors ${
+                                    isUsed 
+                                      ? 'bg-academic-blue-200 dark:bg-[#3c4043]' 
+                                      : 'bg-academic-blue-800 dark:bg-[#8ab4f8]'
+                                  }`} 
+                                />
+                              );
+                            })}
+                          </div>
+                          <span className="text-[9px] font-bold text-academic-blue-500 dark:text-[#9aa0a6]">
+                            {displayQuota}/{maxQuota}
+                          </span>
+                        </>
+                      ) : (
+                        /* 登录用户（Free）：显示进度条样式（50 个配额用进度条显示） */
+                        <div className="flex items-center gap-2">
+                          {/* 进度条容器 */}
+                          <div className="w-20 h-2 bg-academic-blue-100 dark:bg-[#3c4043] rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-academic-blue-800 dark:bg-[#8ab4f8] transition-all duration-300"
+                              style={{ width: `${Math.max(0, Math.min(100, (displayQuota / maxQuota) * 100))}%` }}
+                            />
+                          </div>
+                          {/* 文字显示 */}
+                          <span className="text-[9px] font-bold text-academic-blue-500 dark:text-[#9aa0a6] whitespace-nowrap">
+                            {displayQuota}/{maxQuota}
+                          </span>
+                        </div>
+                      )}
                     </>
                   );
                 })()}
-                {/* 开发测试：重置配额按钮 */}
-                {process.env.NODE_ENV === 'development' && (
-                  <button
-                    onClick={() => {
-                      if (confirm('确定要重置游客配额吗？这将清除当前游客 ID。')) {
-                        localStorage.removeItem('anon_id');
-                        setQuotaRemaining(null);
-                        window.location.reload();
-                      }
-                    }}
-                    className="ml-2 text-[8px] text-academic-blue-400 dark:text-[#9aa0a6] hover:text-academic-blue-600 dark:hover:text-[#bdc1c6] underline"
-                    title="重置配额（仅开发模式）"
-                  >
-                    Reset
-                  </button>
-                )}
               </div>
             )}
 
             {user ? (
               <div className="flex items-center gap-2">
+                {/* 用户邮箱 */}
+                <span className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-academic-blue-50 dark:bg-[#3c4043] text-academic-blue-700 dark:text-[#e8eaed]">
+                  {user.email || 'Verified Profile'}
+                </span>
+                {/* 修改密码按钮 */}
                 <button
                   onClick={() => setShowChangePasswordModal(true)}
-                  className="px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all shadow-sm bg-academic-blue-100 dark:bg-[#3c4043] text-academic-blue-700 dark:text-[#e8eaed] hover:bg-academic-blue-200 dark:hover:bg-[#404040]"
+                  className="p-2 rounded-lg text-academic-blue-600 dark:text-[#8ab4f8] hover:bg-academic-blue-100 dark:hover:bg-[#3c4043] transition-all"
                   title="Change Password"
                 >
-                  Change Password
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
                 </button>
+                {/* 登出按钮 */}
                 <button
                   onClick={async () => {
                     const { signOut } = await import('./services/auth');
@@ -1294,14 +1347,13 @@ const App: React.FC = () => {
                     setUserPlan(null);
                     setQuotaRemaining(null);
                   }}
-                  className="px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all shadow-sm bg-academic-blue-50 dark:bg-[#3c4043] text-academic-blue-700 dark:text-[#e8eaed] hover:bg-academic-blue-200 dark:hover:bg-[#404040]"
+                  className="p-2 rounded-lg text-academic-blue-600 dark:text-[#8ab4f8] hover:bg-academic-blue-100 dark:hover:bg-[#3c4043] transition-all"
                   title="Sign Out"
                 >
-                  Sign Out
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                  </svg>
                 </button>
-                <span className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-academic-blue-50 dark:bg-[#3c4043] text-academic-blue-700 dark:text-[#e8eaed]">
-                  {user.email || 'Verified Profile'}
-                </span>
               </div>
             ) : (
               <button 
@@ -1518,7 +1570,7 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="flex justify-between items-center px-2 mt-3">
-              <p className="text-[9px] text-academic-blue-400 dark:text-[#9aa0a6] font-bold uppercase tracking-widest">ScholarPulse Grid Engine • Deep Discovery Mode</p>
+              <p className="text-[9px] text-academic-blue-400 dark:text-[#9aa0a6] font-bold uppercase tracking-widest">FindPaper Grid Engine • Deep Discovery Mode</p>
               <span className="text-[9px] text-academic-blue-800 dark:text-[#8ab4f8] font-bold uppercase tracking-tighter">Institutional Integrity Verified</span>
             </div>
           </div>

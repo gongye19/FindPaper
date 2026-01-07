@@ -134,3 +134,20 @@ class CheckUserResponse(BaseModel):
     email: str = Field(..., description="查询的邮箱")
     exists: bool = Field(..., description="用户是否存在")
     success: bool = Field(..., description="是否成功")
+
+
+# ==============================
+# 确保 Profile 存在服务 Schema
+# ==============================
+
+class EnsureProfileRequest(BaseModel):
+    """确保 Profile 存在请求"""
+    user_id: str = Field(..., description="用户 ID (UUID)", example="123e4567-e89b-12d3-a456-426614174000")
+
+
+class EnsureProfileResponse(BaseModel):
+    """确保 Profile 存在响应"""
+    user_id: str = Field(..., description="用户 ID")
+    created: bool = Field(..., description="是否新创建了 profile")
+    success: bool = Field(..., description="是否成功")
+    message: Optional[str] = Field(None, description="消息")

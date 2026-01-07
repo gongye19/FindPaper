@@ -262,6 +262,72 @@ export function onAuthStateChange(
 }
 
 /**
+ * 确保用户的 profile 存在（通过后端 API）
+ */
+export async function ensureProfile(userId: string, session?: Session | null): Promise<{ success: boolean; created: boolean; message?: string }> {
+  try {
+    const getApiUrl = () => {
+      const envApiUrl = import.meta.env.VITE_API_URL;
+      if (envApiUrl && envApiUrl !== 'http://backend:8000' && envApiUrl !== '') {
+        return envApiUrl;
+      }
+      return '';
+    };
+    const apiUrl = getApiUrl();
+    const apiEndpoint = `${apiUrl}/v1/ensure_profile`;
+    
+    console.log('确保 profile 存在 - API URL:', apiEndpoint);
+    console.log('确保 profile 存在 - 用户 ID:', userId);
+    
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    
+    // 如果有 session，添加 Authorization header
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`;
+    }
+    
+    const response = await fetch(apiEndpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ user_id: userId }),
+    });
+    
+    console.log('确保 profile 存在 - 响应状态:', response.status, response.statusText);
+    
+    if (response.ok) {
+      const data = await response.json();
+      console.log('确保 profile 存在 - 响应数据:', data);
+      return {
+        success: data.success === true,
+        created: data.created === true,
+        message: data.message
+      };
+    } else {
+      const errorText = await response.text();
+      console.error('确保 profile 存在失败:', {
+        status: response.status,
+        statusText: response.statusText,
+        error: errorText
+      });
+      return {
+        success: false,
+        created: false,
+        message: `确保 profile 失败: ${response.status} ${response.statusText}`
+      };
+    }
+  } catch (err) {
+    console.error('确保 profile 存在异常:', err);
+    return {
+      success: false,
+      created: false,
+      message: err instanceof Error ? err.message : '网络错误'
+    };
+  }
+}
+
+/**
  * 检查用户是否存在（通过后端 API）
  */
 export async function checkUserExists(email: string): Promise<boolean> {

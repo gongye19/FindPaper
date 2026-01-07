@@ -271,6 +271,66 @@ class SupabaseService:
             logger.debug(traceback.format_exc())
             return False
     
+    def ensure_user_profile(self, user_id: str) -> Dict[str, Any]:
+        """
+        确保用户的 profile 存在，如果不存在则创建
+        
+        :param user_id: 用户 ID (UUID)
+        :return: 包含 created, success, message 的字典
+        """
+        if not self.client:
+            logger.warning("Supabase 服务不可用，无法确保 profile 存在")
+            return {
+                "created": False,
+                "success": False,
+                "message": "Supabase 服务不可用"
+            }
+        
+        try:
+            # 先检查 profile 是否已存在
+            result = self.client.table("profiles").select("user_id").eq("user_id", user_id).execute()
+            
+            if result.data and len(result.data) > 0:
+                # profile 已存在
+                logger.info(f"用户 {user_id} 的 profile 已存在")
+                return {
+                    "created": False,
+                    "success": True,
+                    "message": "Profile 已存在"
+                }
+            
+            # profile 不存在，创建它
+            logger.info(f"为用户 {user_id} 创建 profile")
+            insert_result = self.client.table("profiles").insert({
+                "user_id": user_id,
+                "plan": "free"
+            }).execute()
+            
+            if insert_result.data and len(insert_result.data) > 0:
+                logger.info(f"成功为用户 {user_id} 创建 profile")
+                return {
+                    "created": True,
+                    "success": True,
+                    "message": "Profile 创建成功"
+                }
+            else:
+                logger.warning(f"为用户 {user_id} 创建 profile 时未返回数据")
+                return {
+                    "created": False,
+                    "success": False,
+                    "message": "创建 profile 时未返回数据"
+                }
+                
+        except Exception as e:
+            logger.error(f"确保用户 profile 存在时出错: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return {
+                "created": False,
+                "success": False,
+                "message": f"创建 profile 失败: {str(e)}"
+            }
+    
 
 
 # 全局单例

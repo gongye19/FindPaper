@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { DOMAINS } from '../constants';
 import { FilterState, Conversation } from '../types';
 
@@ -24,6 +24,25 @@ const Sidebar: React.FC<SidebarProps> = ({
   onDeleteConversation
 }) => {
   const currentYear = new Date().getFullYear();
+  const [yearsOpen, setYearsOpen] = useState(false);
+  const yearsRef = useRef<HTMLDivElement>(null);
+
+  // 点击外部关闭下拉框
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (yearsRef.current && !yearsRef.current.contains(event.target as Node)) {
+        setYearsOpen(false);
+      }
+    };
+
+    if (yearsOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [yearsOpen]);
 
   const toggleDomain = (domainId: string) => {
     const isSelected = filter.domain.includes(domainId);
@@ -66,12 +85,36 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  const handleYearChange = (key: 'startYear' | 'endYear', value: number) => {
-    const newFilter = { ...filter, [key]: value };
-    if (key === 'startYear' && value > filter.endYear) newFilter.endYear = value;
-    if (key === 'endYear' && value < filter.startYear) newFilter.startYear = value;
-    onFilterChange(newFilter);
+  // 切换年份选择
+  const toggleYear = (year: number) => {
+    const isSelected = filter.years.includes(year);
+    if (isSelected) {
+      // 如果取消选择，确保至少保留一个年份
+      if (filter.years.length > 1) {
+        onFilterChange({
+          ...filter,
+          years: filter.years.filter(y => y !== year)
+        });
+      }
+    } else {
+      // 添加年份
+      onFilterChange({
+        ...filter,
+        years: [...filter.years, year].sort((a, b) => b - a) // 降序排列
+      });
+    }
   };
+
+  // 生成年份列表（从当前年份到2000年，降序）
+  const generateYearList = () => {
+    const years: number[] = [];
+    for (let year = currentYear; year >= 2000; year--) {
+      years.push(year);
+    }
+    return years;
+  };
+
+  const yearList = generateYearList();
 
   const formatVenueName = (fullName: string) => {
     const parts = fullName.split(' (');
@@ -94,7 +137,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 3L1 9l11 6l9-4.91V17h2V9L12 3z"/></svg>
           </div>
           <div>
-            <h1 className="text-sm font-extrabold tracking-tighter text-academic-blue-800 dark:text-white uppercase">ScholarPulse</h1>
+            <h1 className="text-sm font-extrabold tracking-tighter text-academic-blue-800 dark:text-white uppercase">FindPaper</h1>
             <div className="h-[2px] w-full bg-academic-blue-800 dark:bg-[#8ab4f8] mt-0.5 rounded-full" />
           </div>
         </div>
@@ -196,21 +239,53 @@ const Sidebar: React.FC<SidebarProps> = ({
 
         <div className="space-y-6">
           <h2 className="text-[10px] font-bold text-black dark:text-[#e8eaed] uppercase tracking-[0.2em] mb-4">Search Period</h2>
-          <div className="space-y-6 px-1">
-            <div className="space-y-2">
-              <div className="flex justify-between items-center text-[10px] font-bold uppercase text-academic-blue-400">
-                <span>Start Year</span>
-                <span className="text-academic-blue-800 dark:text-[#8ab4f8]">{filter.startYear}</span>
+          <div className="relative" ref={yearsRef}>
+            <button 
+              onClick={() => setYearsOpen(!yearsOpen)}
+              className="w-full bg-academic-blue-100 dark:bg-[#303134] border border-academic-blue-300 dark:border-[#3c4043] rounded-lg px-3 py-2.5 flex items-center justify-between text-[12px] text-academic-blue-600 dark:text-[#bdc1c6] font-semibold hover:bg-academic-blue-200 dark:hover:bg-[#3c4043] transition-all shadow-sm"
+            >
+              <span className="truncate">
+                {filter.years.length === 0 
+                  ? 'Select Years' 
+                  : filter.years.length === 1
+                  ? `${filter.years[0]}`
+                  : `${filter.years.length} Years Selected`}
+              </span>
+              <svg 
+                className={`w-3.5 h-3.5 text-academic-blue-500 dark:text-[#9aa0a6] transition-transform ${yearsOpen ? 'rotate-180' : ''}`} 
+                fill="none" 
+                viewBox="0 0 24 24" 
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            
+            {yearsOpen && (
+              <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-academic-blue-1000 backdrop-blur-xl border border-academic-blue-200 dark:border-[#3c4043] rounded-lg shadow-2xl z-50 max-h-72 overflow-y-auto no-scrollbar p-1.5 animate-fade-up">
+                {yearList.map(year => {
+                  const isSelected = filter.years.includes(year);
+                  return (
+                    <div 
+                      key={year}
+                      onClick={() => toggleYear(year)}
+                      className={`px-3 py-2 text-[12px] flex items-center justify-between cursor-pointer rounded-lg transition-colors mb-0.5 last:mb-0 ${
+                        isSelected
+                          ? 'bg-academic-blue-800 dark:bg-[#8ab4f8] text-white dark:text-[#202124] font-bold'
+                          : 'text-academic-blue-600 dark:text-[#bdc1c6] hover:bg-academic-blue-100 dark:hover:bg-[#303134]'
+                      }`}
+                    >
+                      <span>{year}</span>
+                      {isSelected && (
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              <input type="range" min="2000" max={currentYear} step="1" value={filter.startYear} onChange={(e) => handleYearChange('startYear', parseInt(e.target.value))} className="cursor-pointer" />
-            </div>
-            <div className="space-y-2">
-              <div className="flex justify-between items-center text-[10px] font-bold uppercase text-academic-blue-400">
-                <span>End Year</span>
-                <span className="text-academic-blue-800 dark:text-[#8ab4f8]">{filter.endYear}</span>
-              </div>
-              <input type="range" min="2000" max={currentYear} step="1" value={filter.endYear} onChange={(e) => handleYearChange('endYear', parseInt(e.target.value))} className="cursor-pointer" />
-            </div>
+            )}
           </div>
         </div>
 
@@ -280,18 +355,6 @@ const Sidebar: React.FC<SidebarProps> = ({
           ))}
         </div>
       </nav>
-
-      <div className="p-8 border-t border-academic-blue-300 dark:border-[#3c4043] shrink-0">
-        <div className="p-4 bg-white dark:bg-academic-blue-950 rounded-xl border border-academic-blue-200 dark:border-[#3c4043] shadow-sm">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="w-1.5 h-1.5 bg-academic-blue-800 dark:bg-[#8ab4f8] rounded-full animate-pulse shadow-sm shadow-academic-blue-800/50" />
-            <span className="text-[9px] font-extrabold text-academic-blue-500 dark:text-[#9aa0a6] uppercase tracking-widest">Archival Connection</span>
-          </div>
-          <p className="text-[10px] text-academic-blue-600 dark:text-[#bdc1c6] leading-relaxed font-medium italic">
-            Retrieving high-impact metadata from verified institutional archives only.
-          </p>
-        </div>
-      </div>
     </div>
   );
 };

@@ -22,21 +22,22 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        - VITE_API_URL=
-        - VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-https://nfikhewegqgryxnavslu.supabase.co}
-        - VITE_SUPABASE_PUBLISHABLE_KEY=${VITE_SUPABASE_PUBLISHABLE_KEY:-sb_publishable_2Amibt7M_i5sCQkyOnjC5Q_MzGcm6Wm}
+      dockerfile: Dockerfile.dev
     container_name: find_paper_frontend_20251223
     ports:
-      - "3000:80"
+      - "3000:5173"  # 主机端口:容器端口 (Vite 开发服务器)
+    volumes:
+      - ./frontend:/app  # 挂载代码目录，实现实时更新
+      - /app/node_modules  # 排除 node_modules，使用容器内的
     depends_on:
       - backend
     environment:
-      - VITE_API_URL=
+      - VITE_API_URL=http://backend:8000  # Docker 网络中使用服务名
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-https://nfikhewegqgryxnavslu.supabase.co}
+      - VITE_SUPABASE_PUBLISHABLE_KEY=${VITE_SUPABASE_PUBLISHABLE_KEY:-sb_publishable_2Amibt7M_i5sCQkyOnjC5Q_MzGcm6Wm}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:5173/"]
       interval: 30s
       timeout: 10s
       retries: 3

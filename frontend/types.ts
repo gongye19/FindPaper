@@ -35,8 +35,7 @@ export interface Message {
 export interface FilterState {
   domain: string[];
   venues: string[];
-  startYear: number;
-  endYear: number;
+  years: number[]; // 选中的年份数组
 }
 
 export interface Conversation {
