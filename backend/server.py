@@ -57,10 +57,24 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# 配置CORS
+# 配置CORS - 支持开发和生产环境
+# 从环境变量读取允许的域名
+# 开发环境：不设置或设置为 "*" 时允许所有
+# 生产环境：设置为具体域名，如 "https://your-app.vercel.app"
+ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "").strip()
+
+if not ALLOWED_ORIGINS_ENV or ALLOWED_ORIGINS_ENV == "*":
+    # 开发环境或未配置：允许所有（向后兼容）
+    allow_origins = ["*"]
+    logger.info("CORS: 允许所有来源（开发模式）")
+else:
+    # 生产环境：使用配置的域名列表
+    allow_origins = [origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()]
+    logger.info(f"CORS: 允许的来源: {allow_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应该限制具体域名
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -787,4 +801,8 @@ async def paper_search(request: PaperSearchRequest, http_request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os
+    # Railway 使用 PORT 环境变量，本地开发默认 8000
+    port = int(os.getenv("PORT", 8000))
+    logger.info(f"启动服务器: host=0.0.0.0, port={port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)

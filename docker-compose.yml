@@ -5,12 +5,17 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: find_paper_backend_20251223
+    container_name: find_paper_backend_local
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
       - ./backend/.env:/app/.env:ro
+    env_file:
+      - ./backend/.env
+    environment:
+      - PORT=8000
+      - ALLOWED_ORIGINS=*
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:8000/')"]
@@ -23,7 +28,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
-    container_name: find_paper_frontend_20251223
+    container_name: find_paper_frontend_local
     ports:
       - "3000:5173"  # 主机端口:容器端口 (Vite 开发服务器)
     volumes:
@@ -31,10 +36,10 @@ services:
       - /app/node_modules  # 排除 node_modules，使用容器内的
     depends_on:
       - backend
+    env_file:
+      - ./frontend/.env
     environment:
-      - VITE_API_URL=http://backend:8000  # Docker 网络中使用服务名
-      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-https://nfikhewegqgryxnavslu.supabase.co}
-      - VITE_SUPABASE_PUBLISHABLE_KEY=${VITE_SUPABASE_PUBLISHABLE_KEY:-sb_publishable_2Amibt7M_i5sCQkyOnjC5Q_MzGcm6Wm}
+      - VITE_API_URL=http://localhost:8000
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:5173/"]
@@ -44,4 +49,4 @@ services:
 
 networks:
   default:
-    name: find_paper_network
+    name: find_paper_network_local

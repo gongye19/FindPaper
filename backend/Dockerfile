@@ -20,4 +20,6 @@ COPY . .
 EXPOSE 8000
 
 # 启动命令
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Railway 会自动设置 PORT 环境变量
+# 本地 Docker 开发时默认使用 8000
+CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}"]
