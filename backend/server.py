@@ -63,6 +63,14 @@ app = FastAPI(
 # 生产环境：设置为具体域名，如 "https://your-app.vercel.app"
 ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "").strip()
 
+# 调试：记录原始环境变量值
+logger.info(f"CORS: 原始环境变量值: '{ALLOWED_ORIGINS_ENV}'")
+
+# 如果环境变量值包含了 "ALLOWED_ORIGINS=" 前缀，去掉它
+if ALLOWED_ORIGINS_ENV.startswith("ALLOWED_ORIGINS="):
+    ALLOWED_ORIGINS_ENV = ALLOWED_ORIGINS_ENV.replace("ALLOWED_ORIGINS=", "", 1).strip()
+    logger.info(f"CORS: 清理后的环境变量值: '{ALLOWED_ORIGINS_ENV}'")
+
 if not ALLOWED_ORIGINS_ENV or ALLOWED_ORIGINS_ENV == "*":
     # 开发环境或未配置：允许所有（向后兼容）
     allow_origins = ["*"]
