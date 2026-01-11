@@ -103,10 +103,12 @@ from starlette.responses import Response
 def is_origin_allowed(origin: str, allowed_origins: List[str]) -> bool:
     """检查 origin 是否被允许（支持 Vercel 预览域名）"""
     if "*" in allowed_origins:
+        logger.debug(f"CORS: 允许所有来源（通配符）")
         return True
     
     # 精确匹配
     if origin in allowed_origins:
+        logger.debug(f"CORS: 精确匹配 origin={origin}")
         return True
     
     # 支持 Vercel 预览域名：如果配置了主域名，自动允许所有预览域名
@@ -116,9 +118,12 @@ def is_origin_allowed(origin: str, allowed_origins: List[str]) -> bool:
             # 提取主域名部分（例如：find-paper）
             main_domain = allowed.replace("https://", "").replace(".vercel.app", "")
             # 检查是否是 Vercel 预览域名（格式：https://{main_domain}-{hash}.vercel.app）
-            if origin.startswith(f"https://{main_domain}-") and origin.endswith(".vercel.app"):
+            prefix = f"https://{main_domain}-"
+            if origin.startswith(prefix) and origin.endswith(".vercel.app"):
+                logger.info(f"CORS: Vercel 预览域名匹配 origin={origin}, main_domain={main_domain}")
                 return True
     
+    logger.warning(f"CORS: origin 不匹配 origin={origin}, allowed_origins={allowed_origins}")
     return False
 
 class CustomCORSMiddleware(BaseHTTPMiddleware):
@@ -130,15 +135,22 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
         # 检查是否允许该 origin
         is_allowed = is_origin_allowed(origin, allow_origins) if origin else False
         
+        # 调试日志
+        if request.method == "OPTIONS" or origin:
+            logger.info(f"CORS 检查: method={request.method}, origin={origin}, is_allowed={is_allowed}")
+        
         # 处理 OPTIONS 预检请求
         if request.method == "OPTIONS":
-            response = Response()
+            response = Response(status_code=200)
             if is_allowed and origin:
                 response.headers["Access-Control-Allow-Origin"] = origin
                 response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
                 response.headers["Access-Control-Allow-Headers"] = "*"
                 response.headers["Access-Control-Allow-Credentials"] = "true"
                 response.headers["Access-Control-Max-Age"] = "86400"
+                logger.info(f"CORS OPTIONS: 允许 origin={origin}")
+            else:
+                logger.warning(f"CORS OPTIONS: 拒绝 origin={origin}, is_allowed={is_allowed}")
             return response
         
         # 处理正常请求
@@ -148,6 +160,7 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "*"
             response.headers["Access-Control-Allow-Credentials"] = "true"
+            logger.debug(f"CORS: 添加响应头 origin={origin}")
         
         return response
 
