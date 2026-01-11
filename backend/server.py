@@ -170,7 +170,10 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(CustomCORSMiddleware)
+logger.info("=" * 50)
 logger.info("CORS 中间件已注册")
+logger.info(f"允许的来源: {allow_origins}")
+logger.info("=" * 50)
 
 # 从config导入venue配置
 from config import (
@@ -371,6 +374,7 @@ def supplement_abstracts(papers: List[dict], progress_callback=None) -> List[dic
 @app.get("/")
 async def root():
     """根路径"""
+    logger.info("收到根路径请求")
     return {
         "message": "Paper Search API",
         "version": "1.0.0",
@@ -384,6 +388,12 @@ async def root():
             "v1/ensure_profile": "POST - 确保用户 profile 存在"
         }
     }
+
+@app.get("/health")
+async def health():
+    """健康检查端点"""
+    logger.info("收到健康检查请求")
+    return {"status": "ok", "message": "Service is running"}
 
 
 @app.get("/v1/quota")
