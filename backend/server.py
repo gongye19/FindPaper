@@ -131,16 +131,21 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
     
     async def dispatch(self, request: Request, call_next):
         origin = request.headers.get("origin")
+        path = request.url.path
+        method = request.method
+        
+        # 记录所有请求（用于调试）
+        logger.info(f"收到请求: method={method}, path={path}, origin={origin}")
         
         # 检查是否允许该 origin
         is_allowed = is_origin_allowed(origin, allow_origins) if origin else False
         
         # 调试日志
-        if request.method == "OPTIONS" or origin:
-            logger.info(f"CORS 检查: method={request.method}, origin={origin}, is_allowed={is_allowed}")
+        if origin:
+            logger.info(f"CORS 检查: method={method}, origin={origin}, is_allowed={is_allowed}")
         
         # 处理 OPTIONS 预检请求
-        if request.method == "OPTIONS":
+        if method == "OPTIONS":
             response = Response(status_code=200)
             if is_allowed and origin:
                 response.headers["Access-Control-Allow-Origin"] = origin
@@ -148,9 +153,9 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
                 response.headers["Access-Control-Allow-Headers"] = "*"
                 response.headers["Access-Control-Allow-Credentials"] = "true"
                 response.headers["Access-Control-Max-Age"] = "86400"
-                logger.info(f"CORS OPTIONS: 允许 origin={origin}")
+                logger.info(f"CORS OPTIONS: 允许 origin={origin}, path={path}")
             else:
-                logger.warning(f"CORS OPTIONS: 拒绝 origin={origin}, is_allowed={is_allowed}")
+                logger.warning(f"CORS OPTIONS: 拒绝 origin={origin}, is_allowed={is_allowed}, path={path}")
             return response
         
         # 处理正常请求
@@ -160,11 +165,12 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "*"
             response.headers["Access-Control-Allow-Credentials"] = "true"
-            logger.debug(f"CORS: 添加响应头 origin={origin}")
+            logger.info(f"CORS: 添加响应头 origin={origin}, path={path}")
         
         return response
 
 app.add_middleware(CustomCORSMiddleware)
+logger.info("CORS 中间件已注册")
 
 # 从config导入venue配置
 from config import (
