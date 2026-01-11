@@ -71,14 +71,79 @@ else:
     # 生产环境：使用配置的域名列表
     allow_origins = [origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()]
     logger.info(f"CORS: 允许的来源: {allow_origins}")
+    
+    # 如果配置了 Vercel 主域名，自动添加所有 Vercel 预览域名
+    # 例如：配置了 https://find-paper.vercel.app，自动允许所有 https://find-paper-*.vercel.app
+    vercel_origins = []
+    for origin in allow_origins:
+        if origin.startswith("https://") and origin.endswith(".vercel.app"):
+            # 提取主域名部分（例如：find-paper）
+            main_domain = origin.replace("https://", "").replace(".vercel.app", "")
+            # 添加 Vercel 预览域名模式（使用正则表达式）
+            # 注意：FastAPI 的 CORSMiddleware 不支持通配符，所以我们需要使用 allow_origin_regex
+            vercel_origins.append(f"https://{main_domain}-.*\\.vercel\\.app")
+    
+    # 合并所有域名
+    if vercel_origins:
+        logger.info(f"CORS: 自动添加 Vercel 预览域名模式: {vercel_origins}")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allow_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 使用自定义的 CORS 中间件来支持 Vercel 预览域名
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+def is_origin_allowed(origin: str, allowed_origins: List[str]) -> bool:
+    """检查 origin 是否被允许（支持 Vercel 预览域名）"""
+    if "*" in allowed_origins:
+        return True
+    
+    # 精确匹配
+    if origin in allowed_origins:
+        return True
+    
+    # 支持 Vercel 预览域名：如果配置了主域名，自动允许所有预览域名
+    # 例如：配置了 https://find-paper.vercel.app，自动允许 https://find-paper-*.vercel.app
+    for allowed in allowed_origins:
+        if allowed.startswith("https://") and allowed.endswith(".vercel.app"):
+            # 提取主域名部分（例如：find-paper）
+            main_domain = allowed.replace("https://", "").replace(".vercel.app", "")
+            # 检查是否是 Vercel 预览域名（格式：https://{main_domain}-{hash}.vercel.app）
+            if origin.startswith(f"https://{main_domain}-") and origin.endswith(".vercel.app"):
+                return True
+    
+    return False
+
+class CustomCORSMiddleware(BaseHTTPMiddleware):
+    """自定义 CORS 中间件，支持 Vercel 预览域名"""
+    
+    async def dispatch(self, request: Request, call_next):
+        origin = request.headers.get("origin")
+        
+        # 检查是否允许该 origin
+        is_allowed = is_origin_allowed(origin, allow_origins) if origin else False
+        
+        # 处理 OPTIONS 预检请求
+        if request.method == "OPTIONS":
+            response = Response()
+            if is_allowed and origin:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+                response.headers["Access-Control-Allow-Headers"] = "*"
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+                response.headers["Access-Control-Max-Age"] = "86400"
+            return response
+        
+        # 处理正常请求
+        response = await call_next(request)
+        if is_allowed and origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        
+        return response
+
+app.add_middleware(CustomCORSMiddleware)
 
 # 从config导入venue配置
 from config import (
