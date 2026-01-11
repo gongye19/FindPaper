@@ -130,44 +130,51 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
     """自定义 CORS 中间件，支持 Vercel 预览域名"""
     
     async def dispatch(self, request: Request, call_next):
-        origin = request.headers.get("origin")
-        path = request.url.path
-        method = request.method
-        
-        # 记录所有请求（用于调试）
-        logger.info(f"收到请求: method={method}, path={path}, origin={origin}")
-        
-        # 检查是否允许该 origin
-        is_allowed = is_origin_allowed(origin, allow_origins) if origin else False
-        
-        # 调试日志
-        if origin:
-            logger.info(f"CORS 检查: method={method}, origin={origin}, is_allowed={is_allowed}")
-        
-        # 处理 OPTIONS 预检请求
-        if method == "OPTIONS":
-            response = Response(status_code=200)
+        try:
+            origin = request.headers.get("origin")
+            path = request.url.path
+            method = request.method
+            
+            # 记录所有请求（用于调试）
+            logger.info(f"收到请求: method={method}, path={path}, origin={origin}")
+            
+            # 检查是否允许该 origin
+            is_allowed = is_origin_allowed(origin, allow_origins) if origin else False
+            
+            # 调试日志
+            if origin:
+                logger.info(f"CORS 检查: method={method}, origin={origin}, is_allowed={is_allowed}")
+            else:
+                logger.info(f"CORS 检查: method={method}, 无 origin header（直接访问）")
+            
+            # 处理 OPTIONS 预检请求
+            if method == "OPTIONS":
+                response = Response(status_code=200)
+                if is_allowed and origin:
+                    response.headers["Access-Control-Allow-Origin"] = origin
+                    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+                    response.headers["Access-Control-Allow-Headers"] = "*"
+                    response.headers["Access-Control-Allow-Credentials"] = "true"
+                    response.headers["Access-Control-Max-Age"] = "86400"
+                    logger.info(f"CORS OPTIONS: 允许 origin={origin}, path={path}")
+                else:
+                    logger.warning(f"CORS OPTIONS: 拒绝 origin={origin}, is_allowed={is_allowed}, path={path}")
+                return response
+            
+            # 处理正常请求
+            response = await call_next(request)
             if is_allowed and origin:
                 response.headers["Access-Control-Allow-Origin"] = origin
                 response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
                 response.headers["Access-Control-Allow-Headers"] = "*"
                 response.headers["Access-Control-Allow-Credentials"] = "true"
-                response.headers["Access-Control-Max-Age"] = "86400"
-                logger.info(f"CORS OPTIONS: 允许 origin={origin}, path={path}")
-            else:
-                logger.warning(f"CORS OPTIONS: 拒绝 origin={origin}, is_allowed={is_allowed}, path={path}")
+                logger.info(f"CORS: 添加响应头 origin={origin}, path={path}")
+            
             return response
-        
-        # 处理正常请求
-        response = await call_next(request)
-        if is_allowed and origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "*"
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            logger.info(f"CORS: 添加响应头 origin={origin}, path={path}")
-        
-        return response
+        except Exception as e:
+            logger.error(f"CORS 中间件出错: {e}", exc_info=True)
+            # 即使出错也继续处理请求
+            return await call_next(request)
 
 app.add_middleware(CustomCORSMiddleware)
 logger.info("=" * 50)
@@ -392,8 +399,12 @@ async def root():
 @app.get("/health")
 async def health():
     """健康检查端点"""
-    logger.info("收到健康检查请求")
-    return {"status": "ok", "message": "Service is running"}
+    try:
+        logger.info("收到健康检查请求")
+        return {"status": "ok", "message": "Service is running"}
+    except Exception as e:
+        logger.error(f"健康检查端点出错: {e}", exc_info=True)
+        raise
 
 
 @app.get("/v1/quota")
