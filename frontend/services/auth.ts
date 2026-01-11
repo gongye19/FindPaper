@@ -65,11 +65,21 @@ export async function signUp(
 ): Promise<AuthResponse> {
   try {
     console.log('开始注册，邮箱:', email);
+    
+    // 获取前端 URL（支持环境变量配置，用于生产环境）
+    // 如果配置了 VITE_FRONTEND_URL，使用配置的 URL；否则使用当前页面的 origin
+    const frontendUrl = import.meta.env.VITE_FRONTEND_URL || window.location.origin;
+    const redirectUrl = emailRedirectTo || `${frontendUrl}/auth/callback`;
+    
+    console.log('注册重定向 URL:', redirectUrl);
+    console.log('当前页面 origin:', window.location.origin);
+    console.log('环境变量 VITE_FRONTEND_URL:', import.meta.env.VITE_FRONTEND_URL);
+    
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: emailRedirectTo || `${window.location.origin}/auth/callback`,
+        emailRedirectTo: redirectUrl,
       },
     });
 
